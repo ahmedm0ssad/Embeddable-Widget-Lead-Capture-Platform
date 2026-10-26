@@ -4,6 +4,8 @@ Usage (all work):
     python evals/run_eval.py [--base-url http://127.0.0.1:8000]
     python -m evals.run_eval [--base-url ...]
     python -m evals.run_eval --mode in-process --model openai/gpt-oss-120b
+    python -m evals.run_eval --mode in-process --prompt book-classify-v2.md \
+        --out evals/results-v1-v2-study/v2.json
 
 The base URL comes from ``--base-url``, the ``EVAL_BASE_URL`` / ``SUBMIT_BASE_URL``
 env vars, or ``http://127.0.0.1:8000`` by default. If the server is not
@@ -14,6 +16,11 @@ side (useful for model races: the server always runs its own ``LLM_MODEL``;
 effect in-process). No network is touched at import time. ``--batch-size N``
 with ``--sleep S`` submits in batches with a pause between them (free-tier
 friendliness); defaults run everything in one pass, unchanged behavior.
+``--prompt book-classify-v2.md`` sets the ``LLM_PROMPT`` env override
+(prompt_loader reads it at call time) so an in-process run classifies under a
+different versioned prompt — the A/B plumbing; defaults stay v1. ``--out PATH``
+redirects the results JSON (use it for study runs so the committed
+``evals/results.json`` is not clobbered).
 
 Grading (three separate numbers — the product is the number):
 - CATEGORY: expected category matched exactly.
@@ -107,6 +114,7 @@ class Endpoint:
     def __init__(self, base_url: str, mode: str = "auto"):
         self.base_url = base_url.rstrip("/")
         self.mode = mode
+        self._test_client: Any | None = None
         if self.mode == "auto":
             # Probe the server once: reachable → HTTP, otherwise the identical
             # router code runs in-process.
@@ -165,10 +173,15 @@ def _grade(case: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]:
     expected = case.get("expected", {})
     body = response.get("body")
     if response["status"] != 200 or not isinstance(body, dict):
+        reason = f"endpoint returned HTTP {response['status']}"
+        if response.get("transport_error"):
+            # In-process/HTTP transport errors are results too — keep the
+            # underlying message in the artifact instead of a bare "HTTP 0".
+            reason += f" (transport: {response['transport_error']})"
         return {
             "id": case["id"],
             "status": "FAIL",
-            "reason": f"endpoint returned HTTP {response['status']}",
+            "reason": reason,
             "expected_category": expected.get("category"),
             "got_category": body.get("category") if isinstance(body, dict) else None,
             "missing_flags": sorted(expected.get("quality_flags", [])),
@@ -271,10 +284,15 @@ def split_scores(
 
 def _prompt_version() -> str:
     _ensure_repo_importable()
-    from app.services.llm.prompt_loader import BOOK_CLASSIFY_PROMPT, load_prompt
+    from app.services.llm.prompt_loader import (
+        load_prompt,
+        resolve_book_classify_prompt_path,
+    )
 
     try:
-        version, _ = load_prompt(BOOK_CLASSIFY_PROMPT)
+        # Honors the LLM_PROMPT override (read at call time), so the summary
+        # records the prompt version actually used, not the v1 default.
+        version, _ = load_prompt(resolve_book_classify_prompt_path())
         return version
     except Exception:  # noqa: BLE001 — the run still works without this field
         return "unknown"
@@ -319,6 +337,20 @@ def main(argv: list[str] | None = None) -> int:
         default=0.0,
         help="seconds to pause between batches (free-tier friendliness)",
     )
+    parser.add_argument(
+        "--prompt",
+        default=None,
+        help="prompt-file override: sets LLM_PROMPT (e.g. book-classify-v2.md) "
+        "in this process's env — read at call time, effective for the "
+        "in-process mode; validated against the file's version marker. "
+        "Default: unchanged (v1).",
+    )
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="alternative results JSON path (default: evals/results.json) — "
+        "used for A/B study runs so committed evidence is not clobbered",
+    )
     args = parser.parse_args(argv)
 
     # In-process mode needs app config (Supabase etc.); load .env absent-only
@@ -331,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:
         pass
     if args.model:
         os.environ["LLM_MODEL"] = args.model
+    if args.prompt:
+        os.environ["LLM_PROMPT"] = args.prompt
 
     try:
         cases = _load_cases()
@@ -343,6 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"mode: {endpoint.mode}")
     print(f"base_url: {endpoint.base_url}")
     print(f"cases: {len(cases)}")
+    print(f"prompt override: {args.prompt or '(none — default v1)'}")
     if args.model:
         print(
             f"model override: {args.model}"
@@ -431,13 +466,14 @@ def main(argv: list[str] | None = None) -> int:
         "when_unsure_score": f"{unsure_score}/{unbounded_total}",
         "easy_hard_split": easy_hard,
     }
-    RESULTS_PATH.write_text(
+    out_path = Path(args.out) if args.out else RESULTS_PATH
+    out_path.write_text(
         json.dumps({**summary, "cases": results}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     print(f"wall-clock total: {wall_clock_seconds}s")
     print(f"avg latency per case: {average_latency_ms}ms")
-    print(f"saved: {RESULTS_PATH}")
+    print(f"saved: {out_path}")
     return 0
 
 

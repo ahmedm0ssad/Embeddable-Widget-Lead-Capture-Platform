@@ -50,6 +50,7 @@ import logging
 import os
 import time
 from functools import lru_cache
+from pathlib import Path
 
 import tiktoken
 from fastapi import HTTPException
@@ -61,7 +62,10 @@ from app.models.book_classify import (
 )
 from app.services.llm import cache, quarantine
 from app.services.llm.parser import parse_and_validate
-from app.services.llm.prompt_loader import BOOK_CLASSIFY_PROMPT, load_prompt
+from app.services.llm.prompt_loader import (
+    load_prompt,
+    resolve_book_classify_prompt_path,
+)
 from app.services.llm.provider import (
     DEFAULT_LLM_MODEL,
     LLMClientError,
@@ -170,21 +174,28 @@ def _kill_switch_fallback() -> ClassifyOutput:
     )
 
 
-@lru_cache(maxsize=1)
-def _load_book_prompt() -> tuple[str, str]:
-    """Load (prompt_version, system_prompt) once and reuse it every call."""
-    return load_prompt(BOOK_CLASSIFY_PROMPT)
+@lru_cache(maxsize=8)
+def _load_book_prompt(prompt_path: str) -> tuple[str, str]:
+    """Load ``(prompt_version, system_prompt)`` for one resolved prompt path.
+
+    Keyed on the path *string* (resolved at call time by
+    :func:`resolve_book_classify_prompt_path`): ``LLM_PROMPT`` can switch the
+    file mid-process without a stale cached entry, because a different file
+    gets its own cache slot. The default (no env override) is always the v1
+    file.
+    """
+    return load_prompt(Path(prompt_path))
 
 
-@lru_cache(maxsize=1)
-def _system_prompt_with_sentinel() -> tuple[str, str]:
+@lru_cache(maxsize=8)
+def _system_prompt_with_sentinel(prompt_path: str) -> tuple[str, str]:
     """(prompt_version, system prompt with the pipeline-level sentinel).
 
     The sentinel is part of the code, not the prompt file: it is appended
     here after the file's own SYSTEM-PROMPT block is loaded, so the trust
-    boundary lives in version control as code. Cached once per process.
+    boundary lives in version control as code. Cached per resolved path.
     """
-    prompt_version, system_prompt = _load_book_prompt()
+    prompt_version, system_prompt = _load_book_prompt(prompt_path)
     return prompt_version, system_prompt + "\n\n" + SENTINEL_INSTRUCTION
 
 
@@ -420,7 +431,12 @@ def run_book_classify(title: str, description: str | None) -> ClassifyOutput:
         # line must never silently disable the model.
         raise HTTPException(status_code=503, detail=_RAW_UNCONFIGURED)
 
-    prompt_version, system_prompt = _system_prompt_with_sentinel()
+    # Resolved at call time: the optional LLM_PROMPT file override (defaults
+    # to v1) flows through here, and cache_key below already salts on
+    # prompt_version, so a v2 prompt gets a disjoint cache namespace.
+    prompt_version, system_prompt = _system_prompt_with_sentinel(
+        str(resolve_book_classify_prompt_path())
+    )
     model = os.getenv("LLM_MODEL") or DEFAULT_LLM_MODEL
     payload: dict = {"title": title, "description": description}
     user_content = json.dumps(payload)

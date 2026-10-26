@@ -31,7 +31,11 @@ from app.services.llm.parser import (
     parse_json_object,
     validate_classify_payload,
 )
-from app.services.llm.prompt_loader import PromptFormatError, load_prompt
+from app.services.llm.prompt_loader import (
+    BOOK_CLASSIFY_PROMPT,
+    PromptFormatError,
+    load_prompt,
+)
 from app.services.llm.provider import (
     DEFAULT_LLM_MODEL,
     LLMClientError,
@@ -119,13 +123,13 @@ class ScriptedProvider:
 
 class TestPromptLoader:
     def test_loads_real_committed_prompt_file(self):
-        version, system_prompt = load_prompt(Path(pipeline.BOOK_CLASSIFY_PROMPT))
+        version, system_prompt = load_prompt(BOOK_CLASSIFY_PROMPT)
 
         assert version == "book-classify-v1"
         assert system_prompt
 
     def test_system_prompt_contains_expected_marker_sections(self):
-        _, system_prompt = load_prompt(pipeline.BOOK_CLASSIFY_PROMPT)
+        _, system_prompt = load_prompt(BOOK_CLASSIFY_PROMPT)
 
         assert "Role and job" in system_prompt
         assert "What to do when unsure" in system_prompt
