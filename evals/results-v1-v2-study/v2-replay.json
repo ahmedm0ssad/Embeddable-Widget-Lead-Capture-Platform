@@ -1,0 +1,60 @@
+[
+  {
+    "id": "case-026",
+    "tag": "recheck-transport",
+    "rep": 1,
+    "status": 503,
+    "body": {
+      "detail": "The LLM provider kept rate limiting; try again later."
+    }
+  },
+  {
+    "id": "case-020",
+    "tag": "stability",
+    "rep": 1,
+    "status": 503,
+    "body": {
+      "detail": "The LLM provider kept rate limiting; try again later."
+    }
+  },
+  {
+    "id": "case-020",
+    "tag": "stability",
+    "rep": 2,
+    "status": 503,
+    "body": {
+      "detail": "The LLM provider kept rate limiting; try again later."
+    }
+  },
+  {
+    "id": "case-026",
+    "tag": "recheck-transport",
+    "rep": 1,
+    "status": 200,
+    "body": {
+      "category": "non-fiction",
+      "summary": "A naturalist tracks a rufous hummingbird across the Gulf, documenting migration with data, notes, and sketches.",
+      "quality_flags": [],
+      "confidence": 0.95,
+      "reason": "The description details a field account of bird migration, clearly non-fiction."
+    }
+  },
+  {
+    "id": "case-020",
+    "tag": "stability",
+    "rep": 1,
+    "status": 503,
+    "body": {
+      "detail": "The LLM provider kept rate limiting; try again later."
+    }
+  },
+  {
+    "id": "case-020",
+    "tag": "stability",
+    "rep": 2,
+    "status": 503,
+    "body": {
+      "detail": "The LLM provider kept rate limiting; try again later."
+    }
+  }
+]
