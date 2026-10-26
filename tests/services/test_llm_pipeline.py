@@ -1283,6 +1283,7 @@ class TestPipelineCostLog:
         book_classify_service.classify_book("Dune", "Desc.")  # fills the cache
 
         with caplog.at_level("INFO", logger="app.services.llm.pipeline"):
+            caplog.clear()  # drop the initial call's line: only the hit matters
             book_classify_service.classify_book("Dune", "Desc.")  # cache hit
 
         assert self._llm_call_records(caplog) == []  # no model call, no line

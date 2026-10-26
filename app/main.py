@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -22,6 +23,11 @@ from app.routers.reports import router as reports_router
 from app.routers.widgets import router as widgets_router
 
 load_dotenv()
+
+# One-line production logging wiring (README-noted gap): without it, app-level
+# INFO lines — including the structured ``llm_call`` cost lines — never reach
+# stderr/container logs because the root logger has no handler.
+logging.basicConfig(level=logging.INFO)
 
 _redis_client: redis_ai.Redis | None = None
 

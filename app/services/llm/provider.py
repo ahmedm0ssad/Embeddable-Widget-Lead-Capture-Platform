@@ -56,9 +56,20 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from functools import lru_cache
 from typing import Any, Protocol
 
 DEFAULT_LLM_MODEL = "openai/gpt-oss-20b"
+
+#: Opt-in structured-output switch (stretch 5): when this env var is set to
+#: ``json_schema`` (read at call time, like the credentials), ``complete``
+#: adds ``response_format={"type": "json_schema", ...}`` compiled from
+#: :class:`~app.models.book_classify.ClassifyOutput`. Default OFF: on models
+#: that support it, malformed JSON becomes essentially impossible; on models
+#: that do not, the request is a 4xx error — which is exactly why it is
+#: opt-in per deployment rather than a hard-coded capability.
+_RESPONSE_FORMAT_ENV = "LLM_RESPONSE_FORMAT"
+_RESPONSE_FORMAT_NAME = "classify_output"
 
 #: Client-side read timeout (seconds) — well under the 60s handler bound.
 CLIENT_TIMEOUT_SECONDS = 30.0
@@ -80,6 +91,48 @@ class LLMUsage:
 
     input_tokens: int = 0
     output_tokens: int = 0
+
+
+def _strict_json_schema(node: Any) -> Any:
+    """Provider-tolerant schema: drop ``title`` cosmetics, close every object.
+
+    Groq's strict json_schema mode rejects any object without
+    ``additionalProperties: false``; pydantic's output leaves that key off.
+    Applied recursively to every object node (root + ``$defs``).
+    """
+    if isinstance(node, dict):
+        fixed = {k: _strict_json_schema(v) for k, v in node.items() if k != "title"}
+        if "properties" in fixed or fixed.get("type") == "object":
+            fixed.setdefault("additionalProperties", False)
+        return fixed
+    if isinstance(node, list):
+        return [_strict_json_schema(v) for v in node]
+    return node
+
+
+@lru_cache(maxsize=1)
+def _classify_json_schema() -> dict[str, Any]:
+    """JSON Schema compiled from ``ClassifyOutput`` (stripped + strict, cached)."""
+    from app.models.book_classify import ClassifyOutput  # offline-safe lazy import
+
+    return _strict_json_schema(ClassifyOutput.model_json_schema())
+
+
+def _response_format() -> dict[str, Any] | None:
+    """Structured-output body for an opt-in ``LLM_RESPONSE_FORMAT=json_schema``.
+
+    Absent/unset/any other value → ``None`` (provider sends no field).
+    """
+    if os.getenv(_RESPONSE_FORMAT_ENV, "").strip().lower() != "json_schema":
+        return None
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": _RESPONSE_FORMAT_NAME,
+            "schema": _classify_json_schema(),
+            "strict": True,
+        },
+    }
 
 
 @dataclass
@@ -255,6 +308,13 @@ class OpenAICompatProvider:
         client = self._get_client(base_url, api_key)
         import openai  # Local: offline tests never import this at module level.
 
+        # Opt-in structured output (stretch 5): env read at call time so the
+        # switch needs no restart, exactly like the credentials above.
+        extra_kwargs: dict[str, Any] = {}
+        response_format = _response_format()
+        if response_format is not None:
+            extra_kwargs["response_format"] = response_format
+
         attempt = 0
         while True:
             attempt += 1
@@ -266,6 +326,7 @@ class OpenAICompatProvider:
                         {"role": "user", "content": user_content},
                     ],
                     temperature=temperature,
+                    **extra_kwargs,
                 )
             except openai.APITimeoutError as exc:
                 # Timeouts retry at most once (TIMEOUT_MAX_ATTEMPTS): a 30s
