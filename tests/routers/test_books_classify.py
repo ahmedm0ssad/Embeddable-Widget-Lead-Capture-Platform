@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -148,3 +150,115 @@ class TestStubNotConfigured:
 
         assert response.status_code == 503
         assert "LLM integration not configured" in response.json()["detail"]
+
+
+SCHEMA_FIELDS = {"category", "summary", "quality_flags", "confidence", "reason"}
+_VALID_CONTENT = json.dumps(
+    {
+        "category": "fiction",
+        "summary": "A summary.",
+        "quality_flags": [],
+        "confidence": 0.9,
+        "reason": "A reason.",
+    }
+)
+_BAD_CONTENT = json.dumps(
+    {
+        "category": "cooking",
+        "summary": "A summary.",
+        "quality_flags": [],
+        "confidence": 0.9,
+        "reason": "A reason.",
+    }
+)
+
+
+class _ScriptedProvider:
+    """Canned provider replies in order, for driving the real pipeline offline."""
+
+    def __init__(self, contents):
+        self.contents = list(contents)
+        self.calls = 0
+
+    def complete(self, *, model, system_prompt, user_content, temperature):
+        from app.services.llm.provider import LLMResponse
+
+        self.calls += 1
+        return LLMResponse(content=self.contents.pop(0), model=model)
+
+
+class TestStage3SchemaContract:
+    """Stage 3: the endpoint contract is schema-only again (no "raw" key)."""
+
+    def test_success_response_body_has_only_schema_fields(self, client, monkeypatch):
+        from app.models.book_classify import BookCategory, ClassifyOutput, QualityFlag
+
+        output = ClassifyOutput(
+            category=BookCategory.FICTION,
+            summary="A summary.",
+            quality_flags=[QualityFlag.SHORT_DESCRIPTION],
+            confidence=0.5,
+            reason="A reason.",
+        )
+        monkeypatch.setattr(
+            "app.routers.books_classify.classify_book", lambda *a, **kw: output
+        )
+
+        response = _post(client, {"title": "T", "description": "d"})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert set(data) == SCHEMA_FIELDS
+        assert "raw" not in data
+
+    def test_repaired_success_returns_schema_only(self, client, monkeypatch, tmp_path):
+        """Bad first answer, good repair → 200 with ONLY schema fields."""
+        from app.services.llm import cache, pipeline
+
+        cache.clear()
+        monkeypatch.delenv("LLM_STUB", raising=False)
+        monkeypatch.setenv("LLM_ENABLED", "true")
+        monkeypatch.setenv("LLM_MODEL", "test-model")
+        monkeypatch.setattr(pipeline, "QUARANTINE_LOG_PATH", tmp_path / "q.jsonl")
+        scripted = _ScriptedProvider([_BAD_CONTENT, _VALID_CONTENT])
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
+
+        response = _post(client, {"title": "Dune", "description": "A description."})
+
+        assert response.status_code == 200
+        assert scripted.calls == 2  # initial + the one repair
+        data = response.json()
+        assert set(data) == SCHEMA_FIELDS  # no "raw" key, never raw model text
+        assert not (tmp_path / "q.jsonl").exists()  # recovered: no quarantine line
+        cache.clear()
+
+    def test_double_failure_maps_to_422_through_http_layer(
+        self, client, monkeypatch, tmp_path
+    ):
+        """Broken twice → exactly one repair → 422 with a readable detail."""
+        from app.services.llm import cache, pipeline
+
+        cache.clear()
+        monkeypatch.delenv("LLM_STUB", raising=False)
+        monkeypatch.setenv("LLM_ENABLED", "true")
+        monkeypatch.setenv("LLM_MODEL", "test-model")
+        quarantine_path = tmp_path / "q.jsonl"
+        monkeypatch.setattr(pipeline, "QUARANTINE_LOG_PATH", quarantine_path)
+        scripted = _ScriptedProvider([_BAD_CONTENT, _BAD_CONTENT])
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
+
+        response = _post(client, {"title": "Dune", "description": "A description."})
+
+        assert response.status_code == 422
+        assert "failed schema validation" in response.json()["detail"]
+        assert scripted.calls == 2  # exactly one repair attempt
+        lines = [
+            json.loads(line)
+            for line in quarantine_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 1
+        assert lines[0]["attempt"] == "repair"
+        assert lines[0]["input"] == {"title": "Dune", "description": "A description."}
+        assert lines[0]["model"] == "test-model"
+        cache.clear()

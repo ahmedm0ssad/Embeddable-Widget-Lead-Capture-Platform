@@ -37,6 +37,11 @@ def get(key: str) -> str | None:
     return _CACHE.get(key)
 
 
+def drop(key: str) -> None:
+    """Evict one key — used when a cached blob no longer validates."""
+    _CACHE.pop(key, None)
+
+
 def put(key: str, value: str) -> None:
     """Store ``value`` under ``key``, trimming the oldest entry past capacity."""
     if key not in _CACHE and len(_CACHE) >= _MAX_SIZE:

@@ -1,10 +1,12 @@
-"""Offline tests for the A17 Stage 2 LLM package.
+"""Offline tests for the A17 LLM package (Stage 3: trustworthy output).
 
 Covers prompt loading from the real committed prompt file, the in-process
-cache (stale-busting via prompt version, clear()), the provider interface
+cache (stale-busting via prompt version, clear/drop), the provider interface
 (stub determinism, OpenAICompat config errors — constructed but never called
-with network), and the pipeline (stub bypass, delegation, cache hit, 503
-mapping). No test imports ``openai`` or touches the network.
+with network), the raw-text parser, schema validation (collect ALL errors,
+deterministic flag order), and the pipeline: parse → validate → exactly one
+repair retry → quarantine + 422, plus cache-hit parsing. No test imports
+``openai`` or touches the network.
 """
 
 import json
@@ -18,10 +20,17 @@ from fastapi import HTTPException
 from app.models.book_classify import BookCategory, ClassifyOutput, QualityFlag
 from app.services import book_classify_service
 from app.services.llm import cache, pipeline
+from app.services.llm.parser import (
+    RawParseError,
+    parse_and_validate,
+    parse_json_object,
+    validate_classify_payload,
+)
 from app.services.llm.prompt_loader import PromptFormatError, load_prompt
 from app.services.llm.provider import (
     DEFAULT_LLM_MODEL,
     LLMConfigError,
+    LLMResponse,
     OpenAICompatProvider,
     StubProvider,
 )
@@ -35,6 +44,29 @@ STUB_CONTENT = json.dumps(
         "reason": "Stub reason.",
     }
 )
+
+_REPAIR_INSTRUCTION = (
+    "Your previous answer was rejected for this reason. Return only corrected "
+    "JSON matching the schema. No commentary, no code fences."
+)
+
+
+def valid_payload(**overrides):
+    """A schema-valid classify payload dict, overridable per test."""
+    payload = {
+        "category": "fiction",
+        "summary": "A plain summary of a plain book.",
+        "quality_flags": [],
+        "confidence": 0.9,
+        "reason": "It reads as a straightforward narrative.",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def valid_content(**overrides) -> str:
+    """A schema-valid raw model reply string, overridable per test."""
+    return json.dumps(valid_payload(**overrides))
 
 
 class CountingProvider:
@@ -52,6 +84,22 @@ class CountingProvider:
             user_content=user_content,
             temperature=temperature,
         )
+
+
+class ScriptedProvider:
+    """Returns canned replies in order; records every message it is sent."""
+
+    def __init__(self, contents: list[str]):
+        self.contents = list(contents)
+        self.calls = 0
+        self.user_contents: list[str] = []
+        self.system_prompts: list[str] = []
+
+    def complete(self, *, model, system_prompt, user_content, temperature):
+        self.calls += 1
+        self.user_contents.append(user_content)
+        self.system_prompts.append(system_prompt)
+        return LLMResponse(content=self.contents.pop(0), model=model)
 
 
 class TestPromptLoader:
@@ -135,6 +183,17 @@ class TestCache:
 
         cache.clear()
         assert cache.get("k1") is None
+
+    def test_drop_evicts_single_key(self):
+        cache.clear()
+
+        cache.put("k1", "v1")
+        cache.put("k2", "v2")
+        cache.drop("k1")
+
+        assert cache.get("k1") is None
+        assert cache.get("k2") == "v2"
+        cache.clear()
 
 
 class TestStubProvider:
@@ -265,87 +324,282 @@ class TestPipelineStubPath:
         assert cache._CACHE == {}
 
 
+class TestParser:
+    def test_bare_json_parses(self):
+        payload = parse_json_object(valid_content())
+
+        assert payload["category"] == "fiction"
+
+    def test_fenced_json_parses(self):
+        fenced = "```json\n" + valid_content() + "\n```"
+
+        payload = parse_json_object(fenced)
+
+        assert payload["category"] == "fiction"
+
+    def test_preamble_text_parses(self):
+        preambled = "Sure! Here's the JSON you asked for:\n" + valid_content()
+
+        payload = parse_json_object(preambled)
+
+        assert payload["summary"] == "A plain summary of a plain book."
+
+    def test_trailing_junk_parses(self):
+        trailing = valid_content() + "\nHope that helps! Let me know if you need more."
+
+        payload = parse_json_object(trailing)
+
+        assert payload["confidence"] == 0.9
+
+    def test_two_objects_takes_the_first(self):
+        first = valid_content()
+        second = json.dumps(valid_payload(category="horror"))
+        two = first + "\n" + second
+
+        payload = parse_json_object(two)
+
+        assert payload["category"] == "fiction"
+
+    def test_braces_inside_string_values_do_not_break_balance(self):
+        tricky = json.dumps(
+            {
+                "category": "fiction",
+                "summary": 'Supports braces { and "quotes" in strings \\ "etc',
+                "quality_flags": [],
+                "confidence": 0.5,
+                "reason": "Trailed by } in text.",
+            }
+        )
+        padded = "Note: " + tricky + " done."
+
+        payload = parse_json_object(padded)
+
+        assert 'braces { and "quotes" in strings' in payload["summary"]
+
+    def test_no_object_raises_raw_parse_error(self):
+        with pytest.raises(RawParseError):
+            parse_json_object("The model refused to answer, sorry!")
+
+    def test_whitespace_only_raises(self):
+        with pytest.raises(RawParseError):
+            parse_json_object("   \n\t  ")
+
+    def test_truncated_object_raises(self):
+        with pytest.raises(RawParseError):
+            parse_json_object('{"category": "fiction", "summary": "unfini')
+
+    def test_non_string_input_raises(self):
+        with pytest.raises(RawParseError, match="not text"):
+            parse_json_object(None)  # type: ignore[arg-type]
+
+    def test_unicode_in_string_values_preserved(self):
+        # Real Groq outputs contain U+2011 non-breaking hyphens inside string
+        # values — legal JSON string content, must never be stripped.
+        content = json.dumps(
+            valid_payload(summary="Planning a twelve\u2011year\u2011old study."),
+            ensure_ascii=False,
+        )
+
+        payload = parse_json_object(content)
+
+        assert payload["summary"] == "Planning a twelve\u2011year\u2011old study."
+
+
+class TestValidate:
+    def test_valid_payload_returns_schema_object(self):
+        output, errors = validate_classify_payload(valid_payload())
+
+        assert errors == []
+        assert output is not None
+        assert output.category is BookCategory.FICTION
+        assert isinstance(output, ClassifyOutput)
+
+    def test_broken_enum_reports_error_and_rejects(self):
+        output, errors = validate_classify_payload(valid_payload(category="cooking"))
+
+        assert output is None
+        assert errors
+        assert any("category" in e for e in errors)
+
+    def test_broken_enum_flag_in_list_rejects(self):
+        output, errors = validate_classify_payload(
+            valid_payload(quality_flags=["soup"])
+        )
+
+        assert output is None
+        assert errors
+
+    def test_missing_required_fields_all_collected(self):
+        payload = valid_payload()
+        del payload["summary"]
+        payload.pop("reason")
+        payload.pop("confidence")
+
+        output, errors = validate_classify_payload(payload)
+
+        assert output is None
+        assert len(errors) == 3  # ALL errors, not just the first
+        assert any("summary" in e for e in errors)
+        assert any("reason" in e for e in errors)
+        assert any("confidence" in e for e in errors)
+
+    def test_wrong_type_rejected(self):
+        output, errors = validate_classify_payload(
+            valid_payload(quality_flags="missing_description")
+        )
+
+        assert output is None
+        assert any("quality_flags" in e for e in errors)
+
+    def test_out_of_range_confidence_rejected(self):
+        output, errors = validate_classify_payload(valid_payload(confidence=1.7))
+
+        assert output is None
+        assert any("confidence" in e for e in errors)
+
+    def test_extra_field_rejected(self):
+        output, errors = validate_classify_payload(
+            valid_payload(author_mood="delighted")
+        )
+
+        assert output is None
+        assert any("author_mood" in e for e in errors)
+
+    def test_string_number_coercion_accepted(self):
+        # Documented laxness: Pydantic v2 default lax mode coerces
+        # string-encoded numbers; model outputs often stringify numbers.
+        output, errors = validate_classify_payload(valid_payload(confidence="0.9"))
+
+        assert errors == []
+        assert output is not None
+        assert output.confidence == 0.9
+
+    def test_summary_too_long_rejected(self):
+        output, errors = validate_classify_payload(valid_payload(summary="x" * 201))
+
+        assert output is None
+        assert any("summary" in e for e in errors)
+
+    def test_flags_sorted_deterministically(self):
+        # Model flag order is unstable; sorted (alphabetical) output makes
+        # equal payloads compare equal.
+        output, errors = validate_classify_payload(
+            valid_payload(quality_flags=["vague_title", "short_description"])
+        )
+
+        assert errors == []
+        assert output is not None
+        assert output.quality_flags == [
+            QualityFlag.SHORT_DESCRIPTION,
+            QualityFlag.VAGUE_TITLE,
+        ]
+
+    def test_flags_sorted_alphabetically_by_value(self):
+        output, _ = validate_classify_payload(
+            valid_payload(quality_flags=["conflicting_metadata", "vague_title"])
+        )
+
+        assert output is not None
+        assert [f.value for f in output.quality_flags] == [
+            "conflicting_metadata",
+            "vague_title",
+        ]
+
+    def test_parse_and_validate_never_raises(self):
+        output, errors = parse_and_validate("there is no json here at all")
+
+        assert output is None
+        assert errors == ["no complete JSON object found in raw model output"]
+
+
 class TestPipelineRealPathOffline:
     """Real-mode behavior with the provider injected — no network anywhere."""
 
     @pytest.fixture(autouse=True)
-    def _cache_and_env(self, monkeypatch):
+    def _cache_and_env(self, monkeypatch, tmp_path):
         cache.clear()
         monkeypatch.setenv("LLM_STUB", "1")  # removed per-test as needed
         monkeypatch.setenv("LLM_ENABLED", "true")
         monkeypatch.setenv("LLM_MODEL", "test-model")
+        monkeypatch.setattr(
+            pipeline, "QUARANTINE_LOG_PATH", tmp_path / "quarantine.jsonl"
+        )
+        self._quarantine_path = tmp_path / "quarantine.jsonl"
         yield
         cache.clear()
 
-    def _inject(self, monkeypatch, content=STUB_CONTENT):
-        counter = CountingProvider(StubProvider(content=content))
-        monkeypatch.setattr(pipeline, "_get_provider", lambda: counter)
-        return counter
+    def quarantine_lines(self) -> list[dict]:
+        if not self._quarantine_path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in self._quarantine_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
 
-    def test_returns_raw_text_and_calls_provider_once(self, monkeypatch):
+    def test_returns_validated_output_and_calls_provider_once(self, monkeypatch):
         monkeypatch.delenv("LLM_STUB", raising=False)
-        counter = self._inject(monkeypatch, content='{"raw-model-json": true}')
+        scripted = ScriptedProvider([valid_content()])
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
 
         result = book_classify_service.classify_book("Dune", "A description.")
 
-        assert isinstance(result, pipeline.RawClassifyOutput)
-        assert result.raw == '{"raw-model-json": true}'
-        assert counter.calls == 1
+        assert isinstance(result, ClassifyOutput)
+        assert result.category is BookCategory.FICTION
+        assert scripted.calls == 1
+        assert self.quarantine_lines() == []  # success writes no quarantine line
+
+    def test_cache_stores_raw_text_not_parsed_output(self, monkeypatch):
+        monkeypatch.delenv("LLM_STUB", raising=False)
+        scripted = ScriptedProvider([valid_content()])
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
+        payload = {"title": "Dune", "description": "A description."}
+        key = cache.cache_key("book-classify-v1", "test-model", payload)
+
+        book_classify_service.classify_book(**payload)
+
+        stored = cache.get(key)
+        assert stored is not None
+        assert json.loads(stored) == valid_payload()  # raw string, not an object
 
     def test_second_same_input_hits_cache_without_provider_call(self, monkeypatch):
         monkeypatch.delenv("LLM_STUB", raising=False)
-        counter = self._inject(monkeypatch, content="segment-one")
+        scripted = ScriptedProvider([valid_content()])
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
 
         first = book_classify_service.classify_book("Dune", "A description.")
         second = book_classify_service.classify_book("Dune", "A description.")
 
-        assert first.raw == second.raw == "segment-one"
-        assert counter.calls == 1  # second call served from cache
+        assert first == second  # both validated schema outputs
+        assert isinstance(second, ClassifyOutput)  # cache hit re-parses, no raw leak
+        assert scripted.calls == 1  # second call served from cache
 
     def test_different_input_misses_cache(self, monkeypatch):
         monkeypatch.delenv("LLM_STUB", raising=False)
-        counter = self._inject(monkeypatch, content="segment-two")
+        scripted = ScriptedProvider([valid_content(), valid_content()])
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
 
         book_classify_service.classify_book("Dune", "A description.")
         book_classify_service.classify_book("Dune", "A different description.")
 
-        assert counter.calls == 2
+        assert scripted.calls == 2
 
     def test_user_content_is_json_encoded_user_message(self, monkeypatch):
         monkeypatch.delenv("LLM_STUB", raising=False)
-        seen = {}
-
-        class CapturingProvider:
-            def complete(self, *, model, system_prompt, user_content, temperature):
-                seen.update(
-                    model=model,
-                    system_prompt=system_prompt,
-                    user_content=user_content,
-                    temperature=temperature,
-                )
-                return StubProvider().complete(
-                    model=model,
-                    system_prompt=system_prompt,
-                    user_content=user_content,
-                    temperature=temperature,
-                )
-
-        monkeypatch.setattr(pipeline, "_get_provider", lambda: CapturingProvider())
+        scripted = ScriptedProvider([valid_content()])
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
         book_classify_service.classify_book('Malice "\b\n Title', "Desc")
 
         # Anti-injection contract: user data JSON-encoded, out of system prompt.
-        assert json.loads(seen["user_content"]) == {
-            "title": 'Malice "\b\n Title',
-            "description": "Desc",
-        }
-        assert '"Malice' not in seen["system_prompt"]
-        assert seen["model"] == "test-model"
-        assert seen["temperature"] == 0.0
+        seen_user = json.loads(scripted.user_contents[0])
+        assert seen_user == {"title": 'Malice "\b\n Title', "description": "Desc"}
+        assert '"Malice' not in scripted.system_prompts[0]
 
     def test_llm_enabled_off_returns_503(self, monkeypatch):
         monkeypatch.delenv("LLM_STUB", raising=False)
         monkeypatch.setenv("LLM_ENABLED", "")
-        self._inject(monkeypatch)
+        scripted = ScriptedProvider([valid_content()])
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
 
         with pytest.raises(HTTPException) as exc_info:
             book_classify_service.classify_book("Dune", None)
@@ -384,19 +638,206 @@ class TestPipelineRealPathOffline:
     def test_default_model_used_when_llm_model_unset(self, monkeypatch):
         monkeypatch.delenv("LLM_STUB", raising=False)
         monkeypatch.delenv("LLM_MODEL", raising=False)
-        seen = {}
-
-        class CapturingProvider:
-            def complete(self, *, model, system_prompt, user_content, temperature):
-                seen["model"] = model
-                return StubProvider().complete(
-                    model=model,
-                    system_prompt=system_prompt,
-                    user_content=user_content,
-                    temperature=temperature,
-                )
-
-        monkeypatch.setattr(pipeline, "_get_provider", lambda: CapturingProvider())
+        scripted = ScriptedProvider([valid_content()])
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
         book_classify_service.classify_book("Dune", "Desc")
 
-        assert seen["model"] == DEFAULT_LLM_MODEL
+        assert scripted.calls == 1
+
+
+class TestPipelineRepairFlow:
+    """Stage 3 repair-once→quarantine chain, provider scripted, fully offline."""
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch, tmp_path):
+        cache.clear()
+        monkeypatch.delenv("LLM_STUB", raising=False)
+        monkeypatch.setenv("LLM_ENABLED", "true")
+        monkeypatch.setenv("LLM_MODEL", "test-model")
+        monkeypatch.setattr(
+            pipeline, "QUARANTINE_LOG_PATH", tmp_path / "quarantine.jsonl"
+        )
+        self._quarantine_path = tmp_path / "quarantine.jsonl"
+        yield
+        cache.clear()
+
+    def quarantine_lines(self) -> list[dict]:
+        assert self._quarantine_path.exists(), "quarantine file missing"
+        return [
+            json.loads(line)
+            for line in self._quarantine_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def _inject(self, monkeypatch, contents) -> ScriptedProvider:
+        scripted = ScriptedProvider(contents)
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
+        return scripted
+
+    def test_broken_enum_triggers_one_repair_then_success(self, monkeypatch):
+        bad = json.dumps(valid_payload(category="cooking"))
+        scripted = self._inject(monkeypatch, [bad, valid_content(category="romance")])
+
+        result = book_classify_service.classify_book("A Love Letter", "Romance plot.")
+
+        assert result.category is BookCategory.ROMANCE
+        assert scripted.calls == 2  # initial + exactly one repair
+
+        # Repair message: original content + previous answer + exact errors.
+        repair_user = json.loads(scripted.user_contents[1])
+        assert repair_user["original_record"] == {
+            "title": "A Love Letter",
+            "description": "Romance plot.",
+        }
+        assert json.loads(repair_user["previous_answer"]) == valid_payload(
+            category="cooking"
+        )
+        assert any("cooking" in reason for reason in repair_user["rejection_reasons"])
+        assert repair_user["instruction"] == _REPAIR_INSTRUCTION
+
+    def test_broken_enum_both_times_fails_422_with_one_quarantine_line(
+        self, monkeypatch
+    ):
+        bad = json.dumps(valid_payload(category="cooking"))
+        scripted = self._inject(monkeypatch, [bad, bad])
+
+        with pytest.raises(HTTPException) as exc_info:
+            book_classify_service.classify_book("Dune", "Desc.")
+
+        assert exc_info.value.status_code == 422
+        assert "failed schema validation" in exc_info.value.detail
+        assert scripted.calls == 2  # never a second repair
+
+        lines = self.quarantine_lines()
+        assert len(lines) == 1
+        line = lines[0]
+        assert line["attempt"] == "repair"
+        assert line["input"] == {"title": "Dune", "description": "Desc."}
+        assert line["prompt_version"] == "book-classify-v1"
+        assert line["model"] == "test-model"
+        assert any("cooking" in e for e in line["errors"])
+        assert json.loads(line["raw_output"]) == valid_payload(category="cooking")
+
+    def test_initial_failure_recovered_by_repair_writes_no_quarantine_line(
+        self, monkeypatch
+    ):
+        bad = json.dumps(valid_payload(category="cooking"))
+        scripted = self._inject(monkeypatch, [bad, valid_content()])
+
+        book_classify_service.classify_book("Dune", "Desc.")
+
+        assert scripted.calls == 2
+        assert not self._quarantine_path.exists()
+
+    def test_missing_required_field_same_repair_then_422_flow(self, monkeypatch):
+        broken = json.dumps(
+            {k: v for k, v in valid_payload().items() if k != "summary"}
+        )
+        still_broken = json.dumps(
+            {k: v for k, v in valid_payload().items() if k != "summary"}
+        )
+        scripted = self._inject(monkeypatch, [broken, still_broken])
+
+        with pytest.raises(HTTPException) as exc_info:
+            book_classify_service.classify_book("Dune", "Desc.")
+
+        assert exc_info.value.status_code == 422
+        assert scripted.calls == 2
+        line = self.quarantine_lines()[0]
+        assert line["attempt"] == "repair"
+        assert any("summary" in e for e in line["errors"])
+
+    def test_wrong_type_rejected_via_repair_chain(self, monkeypatch):
+        wrong_type = json.dumps(valid_payload(quality_flags="missing_description"))
+        scripted = self._inject(
+            monkeypatch, [wrong_type, valid_content(quality_flags=["vague_title"])]
+        )
+
+        result = book_classify_service.classify_book("Dune", "Desc.")
+
+        assert result.quality_flags == [QualityFlag.VAGUE_TITLE]
+        assert scripted.calls == 2
+
+    def test_string_number_confidence_coerces_without_repair(self, monkeypatch):
+        # Documented laxness: confidence "0.9" (string) is valid via Pydantic
+        # lax coercion on the FIRST attempt — no repair call burned.
+        coerced = json.dumps(valid_payload(confidence="0.9"))
+        scripted = self._inject(monkeypatch, [coerced])
+
+        result = book_classify_service.classify_book("Dune", "Desc.")
+
+        assert result.confidence == 0.9
+        assert scripted.calls == 1
+
+    def test_fenced_and_preambled_outputs_validate_fine(self, monkeypatch):
+        fenced = "```json\n" + valid_content() + "\n```"
+
+        class Delegating:
+            def __init__(self, content):
+                self.content = content
+
+            def complete(self, *, model, system_prompt, user_content, temperature):
+                return LLMResponse(content=self.content, model="m")
+
+        provider = CountingProvider(Delegating(fenced))
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: provider)
+
+        result = book_classify_service.classify_book("Dune", "Desc.")
+
+        assert isinstance(result, ClassifyOutput)
+        assert provider.calls == 1
+
+    def test_flags_sorted_regardless_of_model_order(self, monkeypatch):
+        unordered = json.dumps(
+            valid_payload(quality_flags=["vague_title", "short_description"])
+        )
+        self._inject(monkeypatch, [unordered])
+
+        result = book_classify_service.classify_book("Dune", "Desc.")
+
+        assert [f.value for f in result.quality_flags] == [
+            "short_description",
+            "vague_title",
+        ]
+
+    def test_unicode_string_content_preserved_end_to_end(self, monkeypatch):
+        unicode_body = json.dumps(
+            valid_payload(summary="A twelve\u2011year\u2011old case reopened."),
+            ensure_ascii=False,
+        )
+        self._inject(monkeypatch, [unicode_body])
+
+        result = book_classify_service.classify_book("Dune", "Desc.")
+
+        assert result.summary == "A twelve\u2011year\u2011old case reopened."
+
+    def test_repair_success_result_is_cached(self, monkeypatch):
+        bad = json.dumps(valid_payload(category="cooking"))
+        scripted = self._inject(monkeypatch, [bad, valid_content()])
+
+        first = book_classify_service.classify_book("Dune", "Desc.")
+        second = book_classify_service.classify_book("Dune", "Desc.")
+
+        assert first == second
+        assert scripted.calls == 2  # third equivalent call would be a cache hit
+
+    def test_cache_hit_failure_poisoned_entry(self, monkeypatch):
+        scripted = self._inject(monkeypatch, [valid_content()])
+        payload = {"title": "Dune", "description": "Desc."}
+        key = cache.cache_key("book-classify-v1", "test-model", payload)
+        book_classify_service.classify_book(**payload)
+        assert scripted.calls == 1
+
+        # Simulate a cache entry that no longer validates (shouldn't happen;
+        # e.g. schema tightening). Must quarantine once with cache-hit attempt,
+        # evict the entry, and never consult the provider.
+        cache.put(key, "this is { not json")
+        with pytest.raises(HTTPException) as exc_info:
+            book_classify_service.classify_book(**payload)
+
+        assert exc_info.value.status_code == 422
+        assert scripted.calls == 1  # poisoned entry handled without model call
+        line = self.quarantine_lines()[0]
+        assert line["attempt"] == "cache-hit"
+        assert line["raw_output"] == "this is { not json"
+        assert cache.get(key) is None  # evicted

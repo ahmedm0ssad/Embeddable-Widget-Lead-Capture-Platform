@@ -37,18 +37,3 @@ class ClassifyOutput(BaseModel):
     quality_flags: list[QualityFlag]
     confidence: float = Field(ge=0.0, le=1.0)
     reason: str
-
-
-class RawClassifyOutput(BaseModel):
-    """Stage 2 honest passthrough: the raw model text, unparsed.
-
-    The real path at Stage 2 does not parse/validate the model output yet
-    (that is Stage 3), so the endpoint returns ``{"raw": <model text>}``.
-    """
-
-    raw: str
-
-
-#: Endpoint response shape: the full classification (stub mode / Stage 3+) or
-#: the Stage 2 raw-text passthrough from the real model path.
-ClassifyResponse = ClassifyOutput | RawClassifyOutput
