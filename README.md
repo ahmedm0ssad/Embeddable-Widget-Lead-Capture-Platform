@@ -516,6 +516,31 @@ With `LLM_STUB` unset, the endpoint responds `503` until the real pipeline lands
 
 Three environment variables (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`) swap the provider — laptop-local Ollama or hosted Groq — with zero code changes.
 
+### Production behavior (Stage 4)
+
+- **Timeout**: the SDK client is built with a 30s timeout (≤ 60s bound) → a
+  transport deadline maps to a clean **504** ("the LLM provider took too long
+  to answer; try again"), never a 500.
+- **Transport retries are ours, the SDK's are off** (`max_retries=0` — the
+  SDK default would silently multiply calls and burn quota): **3 attempts
+  total** (2 retries) for connection errors, 5xx, and 429s, with exponential
+  backoff **1s → 2s → 4s (+ ≤ 0.25s jitter)**; a 429's `Retry-After` header
+  is obeyed when numeric or HTTP-date, capped at 15s. **Timeouts retry at
+  most once** (max 2 attempts) so one handler never spends 3 × 30s waiting.
+- **NEVER retried**: 400/401/403/404 (any 4xx) — fail fast, zero retries,
+  surfaced as **503** naming the cause ("LLM provider rejected the request;
+  check LLM_MODEL or key").
+- **Kill switch**: `LLM_ENABLED=false` (or `0`/`no`/`off`) returns a
+  deterministic schema-valid fallback (`category=other`, confidence 0.0)
+  immediately, with zero provider/cache calls. `LLM_STUB=1` is a dev
+  override checked BEFORE the kill switch (test suites pin both); blank/-
+  unset `LLM_ENABLED` is "not configured" → 503, not the kill switch.
+- **Cost**: one structured log line `llm_call ...` per model call (prompt
+  version, model, input/output tokens, duration_ms, attempt
+  initial/repair, repaired flag, cache miss/hit, outcome).
+- The schema-repair retry (Stage 3) stays **exactly one** — it is separate
+  from transport retries above.
+
 ## License
 
 [MIT](LICENSE)

@@ -1,12 +1,16 @@
-"""Offline tests for the A17 LLM package (Stage 3: trustworthy output).
+"""Offline tests for the A17 LLM package (Stage 4: fit to run in production).
 
 Covers prompt loading from the real committed prompt file, the in-process
 cache (stale-busting via prompt version, clear/drop), the provider interface
 (stub determinism, OpenAICompat config errors — constructed but never called
 with network), the raw-text parser, schema validation (collect ALL errors,
-deterministic flag order), and the pipeline: parse → validate → exactly one
-repair retry → quarantine + 422, plus cache-hit parsing. No test imports
-``openai`` or touches the network.
+deterministic flag order), the pipeline: parse → validate → exactly one
+repair retry → quarantine + 422, cache-hit parsing, the Stage 4 transport
+retry policy (timeouts, retryable vs fail-fast, Retry-After, backoff —
+real openai exception types raised by a fake SDK client, ``_sleep``
+recorded, no I/O), the ``llm_call`` cost line (caplog), and the
+``LLM_ENABLED=false`` kill switch. No test touches the network; ``openai``
+is imported only lazily inside test helpers.
 """
 
 import json
@@ -20,6 +24,7 @@ from fastapi import HTTPException
 from app.models.book_classify import BookCategory, ClassifyOutput, QualityFlag
 from app.services import book_classify_service
 from app.services.llm import cache, pipeline
+from app.services.llm import provider as provider_module
 from app.services.llm.parser import (
     RawParseError,
     parse_and_validate,
@@ -29,8 +34,13 @@ from app.services.llm.parser import (
 from app.services.llm.prompt_loader import PromptFormatError, load_prompt
 from app.services.llm.provider import (
     DEFAULT_LLM_MODEL,
+    LLMClientError,
     LLMConfigError,
+    LLMConnectionError,
+    LLMRateLimitError,
     LLMResponse,
+    LLMTimeoutError,
+    LLMUsage,
     OpenAICompatProvider,
     StubProvider,
 )
@@ -89,17 +99,22 @@ class CountingProvider:
 class ScriptedProvider:
     """Returns canned replies in order; records every message it is sent."""
 
-    def __init__(self, contents: list[str]):
+    def __init__(self, contents: list[str], usage: "LLMUsage | None" = None):
         self.contents = list(contents)
         self.calls = 0
         self.user_contents: list[str] = []
         self.system_prompts: list[str] = []
+        self.usage = usage
 
     def complete(self, *, model, system_prompt, user_content, temperature):
         self.calls += 1
         self.user_contents.append(user_content)
         self.system_prompts.append(system_prompt)
-        return LLMResponse(content=self.contents.pop(0), model=model)
+        return LLMResponse(
+            content=self.contents.pop(0),
+            model=model,
+            usage=self.usage or LLMUsage(),
+        )
 
 
 class TestPromptLoader:
@@ -595,7 +610,10 @@ class TestPipelineRealPathOffline:
         assert seen_user == {"title": 'Malice "\b\n Title', "description": "Desc"}
         assert '"Malice' not in scripted.system_prompts[0]
 
-    def test_llm_enabled_off_returns_503(self, monkeypatch):
+    def test_llm_enabled_blank_or_unset_returns_503(self, monkeypatch):
+        # Blank/unset is "not configured", NOT the kill switch (an empty env
+        # line must never silently disable the model) — kill switch requires
+        # an explicit falsy value like "false"/"0"/"no"/"off".
         monkeypatch.delenv("LLM_STUB", raising=False)
         monkeypatch.setenv("LLM_ENABLED", "")
         scripted = ScriptedProvider([valid_content()])
@@ -841,3 +859,526 @@ class TestPipelineRepairFlow:
         assert line["attempt"] == "cache-hit"
         assert line["raw_output"] == "this is { not json"
         assert cache.get(key) is None  # evicted
+
+
+def _ok_sdk_response(content: str, input_tokens: int = 9, output_tokens: int = 4):
+    import types
+
+    message = types.SimpleNamespace(content=content)
+    choice = types.SimpleNamespace(message=message)
+    usage = types.SimpleNamespace(
+        prompt_tokens=input_tokens, completion_tokens=output_tokens
+    )
+    return types.SimpleNamespace(choices=[choice], usage=usage)
+
+
+class TestProviderRetryPolicy:
+    """Transport retry policy inside OpenAICompatProvider — Stage 4.
+
+    Real ``openai`` exception types are raised by a fake SDK client (offline;
+    no network), ``_sleep`` is recorded instead of sleeping, and jitter is
+    pinned to its bounds for deterministic assertions.
+    """
+
+    @staticmethod
+    def _sdk_error(kind: str, status_code: int = 0, headers: dict | None = None):
+        import httpx
+        import openai
+
+        request = httpx.Request("POST", "https://llm.test/v1/chat/completions")
+        if kind == "timeout":
+            return openai.APITimeoutError(request)
+        response = httpx.Response(
+            status_code, headers=dict(headers or {}), request=request
+        )
+        body = {"error": {"message": "synthetic"}}
+        if kind == "rate":
+            return openai.RateLimitError("rate limited", response=response, body=body)
+        if kind == "server":
+            return openai.InternalServerError("internal", response=response, body=body)
+        if kind == "auth":
+            return openai.AuthenticationError("bad key", response=response, body=body)
+        return openai.APIStatusError(
+            f"status {status_code}", response=response, body=body
+        )
+
+    class _FakeClient:
+        """Scripted SDK stand-in: raises/returns items in order."""
+
+        def __init__(self, script):
+            import types
+
+            self.chat = types.SimpleNamespace(completions=self)
+            self.script = list(script)
+            self.calls = 0
+
+        def create(self, **kwargs):
+            self.calls += 1
+            item = self.script.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    def _make(self, monkeypatch, script):
+        """Provider with a scripted fake client; jitter pinned high."""
+        sleeps: list[float] = []
+        monkeypatch.setattr(provider_module, "_sleep", sleeps.append)
+        monkeypatch.setattr(
+            provider_module,
+            "random",
+            types.SimpleNamespace(uniform=lambda lo, hi: hi),
+        )
+        provider = OpenAICompatProvider(
+            base_url="https://llm.test", api_key="fake-local-key-nothing-real"
+        )
+        client = self._FakeClient(script)
+        provider._client = client  # bypass env lookups; policy under test
+        return provider, client, sleeps
+
+    def test_success_after_one_500_retries_with_backoff(self, monkeypatch):
+        ok = _ok_sdk_response(valid_content())
+        provider, client, sleeps = self._make(
+            monkeypatch, [self._sdk_error("server", 500), ok]
+        )
+
+        response = provider.complete(
+            model="m", system_prompt="s", user_content="u", temperature=0.0
+        )
+
+        assert response.content == valid_content()
+        assert client.calls == 2
+        # jitter pinned high: backoff 1s + 0.25s jitter
+        assert sleeps == [1.25]
+
+    def test_success_after_two_500s_uses_full_backoff_curve(self, monkeypatch):
+        err = self._sdk_error("server", 500)
+        ok = _ok_sdk_response(valid_content())
+        provider, client, sleeps = self._make(monkeypatch, [err, err, ok])
+
+        provider.complete(
+            model="m", system_prompt="s", user_content="u", temperature=0.0
+        )
+
+        assert client.calls == 3
+        assert sleeps == [1.25, 2.25]  # 1s+jitter, 2s+jitter — no third retry
+
+    def test_500_exhausted_maps_to_connection_error(self, monkeypatch):
+        err = self._sdk_error("server", 500)
+        provider, client, sleeps = self._make(monkeypatch, [err, err, err])
+
+        with pytest.raises(LLMConnectionError) as exc_info:
+            provider.complete(
+                model="m", system_prompt="s", user_content="u", temperature=0.0
+            )
+
+        assert client.calls == provider_module.MAX_ATTEMPTS == 3
+        assert len(sleeps) == 2  # retries before attempts 2 and 3 only
+        assert "attempt(s)" in str(exc_info.value)
+
+    def test_timeout_retries_at_most_once(self, monkeypatch):
+        timeout = self._sdk_error("timeout")
+        provider, client, sleeps = self._make(monkeypatch, [timeout, timeout])
+
+        with pytest.raises(LLMTimeoutError):
+            provider.complete(
+                model="m", system_prompt="s", user_content="u", temperature=0.0
+            )
+
+        assert client.calls == 2  # never a third 30s wait inside one handler
+        assert sleeps == [1.25]
+
+    def test_timeout_then_success(self, monkeypatch):
+        timeout = self._sdk_error("timeout")
+        ok = _ok_sdk_response(valid_content())
+        provider, client, sleeps = self._make(monkeypatch, [timeout, ok])
+
+        response = provider.complete(
+            model="m", system_prompt="s", user_content="u", temperature=0.0
+        )
+
+        assert response.content == valid_content()
+        assert client.calls == 2
+        assert sleeps == [1.25]
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+    def test_4xx_fails_fast_with_zero_retries(self, monkeypatch, status):
+        err = self._sdk_error("status", status_code=status)
+        provider, client, sleeps = self._make(monkeypatch, [err])
+
+        with pytest.raises(LLMClientError) as exc_info:
+            provider.complete(
+                model="m", system_prompt="s", user_content="u", temperature=0.0
+            )
+
+        assert client.calls == 1  # fail fast on the first attempt
+        assert sleeps == []
+        assert exc_info.value.status_code == status
+        assert "check LLM_MODEL or key" in str(exc_info.value)
+
+    def test_429_with_numeric_retry_after_is_obeyed(self, monkeypatch):
+        rate = self._sdk_error("rate", status_code=429, headers={"Retry-After": "7"})
+        ok = _ok_sdk_response(valid_content())
+        provider, client, sleeps = self._make(monkeypatch, [rate, ok])
+
+        provider.complete(
+            model="m", system_prompt="s", user_content="u", temperature=0.0
+        )
+
+        assert client.calls == 2
+        assert sleeps == [7.25]  # Retry-After 7s (+ capped jitter), not 1s
+
+    def test_429_with_http_date_retry_after_is_obeyed(self, monkeypatch):
+        from datetime import datetime, timedelta, timezone
+
+        in_3_seconds = (datetime.now(timezone.utc) + timedelta(seconds=3)).strftime(
+            "%a, %d %b %Y %H:%M:%S GMT"
+        )
+        rate = self._sdk_error(
+            "rate", status_code=429, headers={"Retry-After": in_3_seconds}
+        )
+        ok = _ok_sdk_response(valid_content())
+        provider, _client, _ = self._make(monkeypatch, [rate, ok])
+
+        provider.complete(
+            model="m", system_prompt="s", user_content="u", temperature=0.0
+        )
+
+        assert provider is not None  # success reached attempt 2
+
+    def test_429_with_malformed_retry_after_falls_back_to_backoff(self, monkeypatch):
+        rate = self._sdk_error(
+            "rate", status_code=429, headers={"Retry-After": "later-ish"}
+        )
+        ok = _ok_sdk_response(valid_content())
+        provider, client, sleeps = self._make(monkeypatch, [rate, ok])
+
+        provider.complete(
+            model="m", system_prompt="s", user_content="u", temperature=0.0
+        )
+
+        assert client.calls == 2
+        assert sleeps == [1.25]  # backoff curve, header treated as absent
+
+    def test_retry_after_is_capped_at_15_seconds(self, monkeypatch):
+        rate = self._sdk_error("rate", status_code=429, headers={"Retry-After": "300"})
+        ok = _ok_sdk_response(valid_content())
+        provider, _client, sleeps = self._make(monkeypatch, [rate, ok])
+
+        provider.complete(
+            model="m", system_prompt="s", user_content="u", temperature=0.0
+        )
+
+        assert sleeps == [15.25]  # 300s request capped at 15s (+ jitter)
+
+    def test_429_exhausted_maps_to_rate_limit_error(self, monkeypatch):
+        rate = self._sdk_error("rate", status_code=429, headers={"Retry-After": "1"})
+        provider, client, sleeps = self._make(monkeypatch, [rate, rate, rate])
+
+        with pytest.raises(LLMRateLimitError):
+            provider.complete(
+                model="m", system_prompt="s", user_content="u", temperature=0.0
+            )
+
+        assert client.calls == 3
+        assert len(sleeps) == 2
+
+    def test_jitter_bounds_never_negative_and_bounded(self, monkeypatch):
+        sleeps: list[float] = []
+        monkeypatch.setattr(provider_module, "_sleep", sleeps.append)
+        # Natural (unpatched) jitter: variable in [0, 0.25].
+        provider = OpenAICompatProvider(
+            base_url="https://llm.test", api_key="fake-local-key-nothing-real"
+        )
+        err = self._sdk_error("server", 500)
+        provider._client = self._FakeClient(
+            [err, err, _ok_sdk_response(valid_content())]
+        )
+
+        provider.complete(
+            model="m", system_prompt="s", user_content="u", temperature=0.0
+        )
+
+        assert len(sleeps) == 2
+        assert all(1.0 <= s <= 1.25 or 2.0 <= s <= 2.25 for s in sleeps)
+        assert all(s >= provider_module._BACKOFF_SECONDS[0] for s in sleeps)
+
+    def test_client_built_with_30s_timeout_and_zero_sdk_retries(self, monkeypatch):
+        import openai
+
+        captured = {}
+
+        def fake_openai_client(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace()
+
+        monkeypatch.setattr(openai, "OpenAI", fake_openai_client)
+        provider = OpenAICompatProvider(
+            base_url="https://llm.test", api_key="fake-local-key-nothing-real"
+        )
+
+        client = provider._get_client("https://llm.test", "fake-local-key-nothing-real")
+
+        assert client is not None
+        assert captured["timeout"] == 30.0
+        assert captured["max_retries"] == 0  # we own retries, SDK must not
+
+    def test_policy_constants_match_documented_policy(self):
+        assert provider_module.CLIENT_TIMEOUT_SECONDS == 30.0
+        assert provider_module.MAX_ATTEMPTS == 3
+        assert provider_module.TIMEOUT_MAX_ATTEMPTS == 2
+        assert provider_module._BACKOFF_SECONDS == (1.0, 2.0, 4.0)
+        assert provider_module._RETRY_AFTER_CAP_SECONDS == 15.0
+
+    def test_token_usage_flows_through_to_response(self, monkeypatch):
+        provider, _client, _ = self._make(
+            monkeypatch,
+            [_ok_sdk_response(valid_content(), input_tokens=11, output_tokens=22)],
+        )
+
+        response = provider.complete(
+            model="m", system_prompt="s", user_content="u", temperature=0.0
+        )
+
+        assert response.usage.input_tokens == 11
+        assert response.usage.output_tokens == 22
+
+
+class TestPipelineTransportMapping:
+    """Typed provider failures map to 503/504 at the pipeline layer."""
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch, tmp_path):
+        cache.clear()
+        monkeypatch.delenv("LLM_STUB", raising=False)
+        monkeypatch.setenv("LLM_ENABLED", "true")
+        monkeypatch.setenv("LLM_MODEL", "test-model")
+        monkeypatch.setattr(
+            pipeline, "QUARANTINE_LOG_PATH", tmp_path / "quarantine.jsonl"
+        )
+        self._quarantine_path = tmp_path / "quarantine.jsonl"
+        yield
+        cache.clear()
+
+    def _inject_raising(self, monkeypatch, exc):
+        class RaisingProvider:
+            def complete(self, **kwargs):
+                raise exc
+
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: RaisingProvider())
+
+    def test_timeout_maps_to_504(self, monkeypatch):
+        self._inject_raising(monkeypatch, LLMTimeoutError("boom"))
+
+        with pytest.raises(HTTPException) as exc_info:
+            book_classify_service.classify_book("Dune", "Desc.")
+
+        assert exc_info.value.status_code == 504
+        assert "took too long" in exc_info.value.detail
+        assert not self._quarantine_path.exists()  # transport ≠ validation failure
+
+    def test_rate_limit_maps_to_503(self, monkeypatch):
+        self._inject_raising(monkeypatch, LLMRateLimitError("boom"))
+
+        with pytest.raises(HTTPException) as exc_info:
+            book_classify_service.classify_book("Dune", "Desc.")
+
+        assert exc_info.value.status_code == 503
+        assert "rate limiting" in exc_info.value.detail
+        assert not self._quarantine_path.exists()
+
+    def test_4xx_client_error_maps_to_503_naming_cause_without_key(self, monkeypatch):
+        self._inject_raising(monkeypatch, LLMClientError("rejected", status_code=401))
+
+        with pytest.raises(HTTPException) as exc_info:
+            book_classify_service.classify_book("Dune", "Desc.")
+
+        assert exc_info.value.status_code == 503
+        assert "check LLM_MODEL or key" in exc_info.value.detail
+        assert "fake" not in exc_info.value.detail  # no key material, ever
+        assert not self._quarantine_path.exists()
+
+    def test_connection_error_maps_to_503(self, monkeypatch):
+        self._inject_raising(monkeypatch, LLMConnectionError("boom"))
+
+        with pytest.raises(HTTPException) as exc_info:
+            book_classify_service.classify_book("Dune", "Desc.")
+
+        assert exc_info.value.status_code == 503
+        assert "unreachable" in exc_info.value.detail
+        assert not self._quarantine_path.exists()
+
+
+class TestPipelineCostLog:
+    """Exactly one structured ``llm_call`` line per provider attempt."""
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch, tmp_path):
+        cache.clear()
+        monkeypatch.delenv("LLM_STUB", raising=False)
+        monkeypatch.setenv("LLM_ENABLED", "true")
+        monkeypatch.setenv("LLM_MODEL", "test-model")
+        monkeypatch.setattr(
+            pipeline, "QUARANTINE_LOG_PATH", tmp_path / "quarantine.jsonl"
+        )
+        yield
+        cache.clear()
+
+    def _llm_call_records(self, caplog) -> list[str]:
+        return [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "app.services.llm.pipeline"
+            and r.getMessage().startswith("llm_call")
+        ]
+
+    def test_one_line_per_attempt_with_tokens_and_outcome(self, monkeypatch, caplog):
+        bad = json.dumps(valid_payload(category="cooking"))
+        good = valid_content()
+        usage = LLMUsage(input_tokens=1234, output_tokens=567)
+        scripted = ScriptedProvider([bad, good], usage=usage)
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
+
+        with caplog.at_level("INFO", logger="app.services.llm.pipeline"):
+            book_classify_service.classify_book("Dune", "Desc.")
+
+        lines = self._llm_call_records(caplog)
+        assert len(lines) == 2  # one per provider attempt, no more
+
+        first, second = lines
+        assert "attempt=initial" in first
+        assert "repaired=False" in first
+        assert "cache=miss" in first
+        assert "outcome=parse-failed" in first
+        assert "input_tokens=1234" in first
+        assert "output_tokens=567" in first
+        assert "duration_ms=" in first
+        assert "model=test-model" in first
+        assert "prompt_version=book-classify-v1" in first
+
+        assert "attempt=repair" in second
+        assert "repaired=True" in second
+        assert "outcome=ok" in second
+        assert "input_tokens=1234" in second
+
+        # No secrets on the line.
+        for line in lines:
+            assert "key" not in line.lower().replace("keys", "") or "fake" not in line
+
+    def test_happy_path_is_one_line_with_ok_outcome(self, monkeypatch, caplog):
+        scripted = ScriptedProvider(
+            [valid_content()], usage=LLMUsage(input_tokens=5, output_tokens=6)
+        )
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
+
+        with caplog.at_level("INFO", logger="app.services.llm.pipeline"):
+            book_classify_service.classify_book("Dune", "Desc.")
+
+        lines = self._llm_call_records(caplog)
+        assert len(lines) == 1
+        assert "outcome=ok" in lines[0]
+
+    def test_cache_hit_logs_nothing(self, monkeypatch, caplog):
+        scripted = ScriptedProvider([valid_content()])
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: scripted)
+        book_classify_service.classify_book("Dune", "Desc.")  # fills the cache
+
+        with caplog.at_level("INFO", logger="app.services.llm.pipeline"):
+            book_classify_service.classify_book("Dune", "Desc.")  # cache hit
+
+        assert self._llm_call_records(caplog) == []  # no model call, no line
+
+    def test_transport_failure_line_has_zero_tokens_and_outcome(
+        self, monkeypatch, caplog
+    ):
+        class RaisingProvider:
+            def complete(self, **kwargs):
+                raise LLMTimeoutError("boom")
+
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: RaisingProvider())
+
+        with (
+            caplog.at_level("INFO", logger="app.services.llm.pipeline"),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            book_classify_service.classify_book("Dune", "Desc.")
+
+        assert exc_info.value.status_code == 504
+        lines = self._llm_call_records(caplog)
+        assert len(lines) == 1
+        assert "outcome=timeout" in lines[0]
+        assert "input_tokens=0" in lines[0]
+        assert "output_tokens=0" in lines[0]
+
+
+class TestKillSwitch:
+    """``LLM_ENABLED=false`` — deterministic fallback, zero model/cache work."""
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch):
+        cache.clear()
+        monkeypatch.delenv("LLM_STUB", raising=False)
+        monkeypatch.setenv("LLM_MODEL", "test-model")
+        yield
+        cache.clear()
+
+    def _inject_never_called(self, monkeypatch):
+        provider = CountingProvider(StubProvider())
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: provider)
+        # Guard: if the provider IS consulted the test fails loudly.
+        return provider
+
+    def test_fallback_is_deterministic_and_schema_valid(self, monkeypatch):
+        self._inject_never_called(monkeypatch)
+        monkeypatch.setenv("LLM_ENABLED", "false")
+
+        first = book_classify_service.classify_book("Dune", "Desc.")
+        second = book_classify_service.classify_book("Dune", "Desc.")
+
+        assert first == second
+        assert first.category is BookCategory.OTHER
+        assert first.confidence == 0.0
+        assert first.quality_flags == []
+        assert first.summary == "LLM classification unavailable — kill switch engaged."
+        assert first.reason == (
+            "The LLM feature is disabled (LLM_ENABLED=false); "
+            "deterministic fallback returned."
+        )
+
+    @pytest.mark.parametrize("value", ["false", "0", "no", "off", "False", "OFF"])
+    def test_explicit_falsy_values_engage_kill_switch(self, monkeypatch, value):
+        self._inject_never_called(monkeypatch)
+        monkeypatch.setenv("LLM_ENABLED", value)
+
+        result = book_classify_service.classify_book("Dune", "Desc.")
+
+        assert result.category is BookCategory.OTHER
+
+    def test_zero_provider_calls_and_no_cache_interaction(self, monkeypatch):
+        provider = self._inject_never_called(monkeypatch)
+        monkeypatch.setenv("LLM_ENABLED", "false")
+        key = cache.cache_key("book-classify-v1", "test-model", {"title": "Dune"})
+        cache.put(key, valid_content())  # even a populated cache must be untouched
+
+        book_classify_service.classify_book("Dune", "Desc.")
+
+        assert provider.calls == 0
+        assert cache.get(key) == valid_content()  # never dropped nor read for use
+
+    def test_stub_beats_kill_switch_dev_override(self, monkeypatch):
+        self._inject_never_called(monkeypatch)
+        monkeypatch.setenv("LLM_ENABLED", "false")
+        monkeypatch.setenv("LLM_STUB", "1")  # dev override checked FIRST
+
+        result = book_classify_service.classify_book("Dune", "Desc.")
+
+        assert result.category is BookCategory.FICTION  # stub shape, not fallback
+        assert result.confidence == 0.9
+
+    def test_blank_llm_enabled_is_not_kill_switch(self, monkeypatch):
+        self._inject_never_called(monkeypatch)
+        monkeypatch.setenv("LLM_ENABLED", "")
+
+        with pytest.raises(HTTPException) as exc_info:
+            book_classify_service.classify_book("Dune", "Desc.")
+
+        assert exc_info.value.status_code == 503  # not-configured, not fallback

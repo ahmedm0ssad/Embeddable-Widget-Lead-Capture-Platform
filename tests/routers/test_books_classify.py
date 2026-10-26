@@ -262,3 +262,31 @@ class TestStage3SchemaContract:
         assert lines[0]["input"] == {"title": "Dune", "description": "A description."}
         assert lines[0]["model"] == "test-model"
         cache.clear()
+
+    def test_provider_timeout_maps_to_504_through_http_layer(
+        self, client, monkeypatch, tmp_path
+    ):
+        """Stage 4: transport timeout → 504 (never 500), no quarantine write."""
+        from app.services.llm import cache, pipeline
+        from app.services.llm.provider import LLMTimeoutError
+
+        cache.clear()
+        monkeypatch.delenv("LLM_STUB", raising=False)
+        monkeypatch.setenv("LLM_ENABLED", "true")
+        monkeypatch.setenv("LLM_MODEL", "test-model")
+        monkeypatch.setattr(
+            pipeline, "QUARANTINE_LOG_PATH", tmp_path / "q-timeout.jsonl"
+        )
+
+        class _TimeoutProvider:
+            def complete(self, **kwargs):
+                raise LLMTimeoutError("deadline exceeded")
+
+        monkeypatch.setattr(pipeline, "_get_provider", lambda: _TimeoutProvider())
+
+        response = _post(client, {"title": "Dune", "description": "A description."})
+
+        assert response.status_code == 504
+        assert "took too long" in response.json()["detail"]
+        assert not (tmp_path / "q-timeout.jsonl").exists()
+        cache.clear()
