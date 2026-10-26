@@ -46,6 +46,18 @@ import and construct this class freely. Credentials are resolved at call
 time (explicit argument first, then ``LLM_BASE_URL``/``LLM_API_KEY`` env),
 never at import. Sleep is injectable: tests patch the module-level
 ``_sleep``.
+
+Streaming (A17 stretch): ``OpenAICompatProvider.complete_stream`` issues the
+same ``chat.completions`` request with ``stream=True`` and yields the text
+deltas (``choice.delta.content``). The transport retry policy applies to the
+INITIAL connection only — the retry loop lives around "create the stream and
+read the first content delta". Once deltas have flowed we are COMMITTED to
+this response: a stream that breaks after 200 OK is never retried (replaying
+the request could double-bill a completion whose prefix was already emitted
+to the client); the mid-stream failure surfaces as ONE typed
+:class:`LLMProviderError` that the streaming pipeline turns into a terminal
+SSE ``error`` event. :class:`StubProvider` gains a deterministic fake stream
+so offline tests exercise the identical accumulate/validate flow.
 """
 
 from __future__ import annotations
@@ -53,6 +65,7 @@ from __future__ import annotations
 import os
 import random
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -180,6 +193,58 @@ class LLMProvider(Protocol):
     ) -> LLMResponse: ...
 
 
+class LLMStreamingProvider(Protocol):
+    """Optional streaming extension of :class:`LLMProvider`.
+
+    Providers that support incremental output implement this in addition to
+    ``complete``; the sync pipeline only ever requires ``complete``, while the
+    streaming pipeline prefers ``complete_stream`` (checked with
+    ``getattr``) and falls back to a one-shot ``complete`` delivery when a
+    provider (e.g. a test fake) does not implement it.
+    """
+
+    def complete_stream(
+        self, *, model: str, system_prompt: str, user_content: str, temperature: float
+    ) -> Iterator[str]: ...
+
+
+def _delta_text(chunk: Any) -> str | None:
+    """Extract ``choices[0].delta.content`` from one streamed chunk.
+
+    Returns ``None`` for chunks with no choices or no content (role-only
+    keep-alives, usage-only final chunks). Tolerates dict-shaped choices so
+    hand-built fakes work the same way as SDK objects.
+    """
+    choices = getattr(chunk, "choices", None) or ()  # defensive: chunk lied
+    if not choices:
+        return None
+    choice = choices[0]
+    delta = getattr(choice, "delta", None)
+    if delta is None and isinstance(choice, dict):
+        delta = choice.get("delta")
+    if delta is None:
+        return None
+    content = getattr(delta, "content", None)
+    if content is None and isinstance(delta, dict):
+        content = delta.get("content")
+    return content or None  # empty-string content counts as absent
+
+
+def _mid_stream_error(exc: BaseException) -> LLMProviderError:
+    """Typed error for a stream that broke AFTER deltas started flowing.
+
+    By policy this is NEVER retried (see the module docstring); the mapping
+    keeps transport shapes recognizable so the pipeline renders the same
+    client-facing wording as the sync path (503 unhappy classes, or the
+    caller's own typed injection passing through unchanged).
+    """
+    if isinstance(exc, LLMProviderError):
+        return exc  # already typed — the pipeline maps it as-is
+    return LLMConnectionError(
+        f"LLM stream failed mid-flight after deltas started ({type(exc).__name__})"
+    )
+
+
 _STUB_CONTENT = (
     '{"category": "fiction", '
     '"summary": "A fictional narrative whose protagonist is drawn into a '
@@ -206,6 +271,20 @@ class StubProvider:
         self, *, model: str, system_prompt: str, user_content: str, temperature: float
     ) -> LLMResponse:
         return LLMResponse(content=self.content, model=self.model)
+
+    def complete_stream(
+        self, *, model: str, system_prompt: str, user_content: str, temperature: float
+    ) -> Iterator[str]:
+        """Fake stream: the canned JSON body in a few deterministic chunks.
+
+        No network, no model: the accumulated buffer is byte-identical to
+        :attr:`content`, so the streaming pipeline's parse/validate step
+        behaves exactly like the sync stub path. Splitting into ~4 chunks
+        exercises the multi-delta accumulation offline.
+        """
+        step = max(1, len(self.content) // 4)
+        for index in range(0, len(self.content), step):
+            yield self.content[index : index + step]
 
 
 def _usage_of_sdk_response(response: Any) -> LLMUsage:
@@ -376,6 +455,148 @@ class OpenAICompatProvider:
             return LLMResponse(
                 content=content, model=use_model, usage=_usage_of_sdk_response(response)
             )
+
+    def complete_stream(
+        self, *, model: str, system_prompt: str, user_content: str, temperature: float
+    ) -> Iterator[str]:
+        """Stream the completion as text deltas (same request shape as ``complete``).
+
+        Retry policy: the FULL transport policy (documented in the module
+        docstring) applies to the initial connection — implemented by
+        :meth:`_open_stream_with_retry`, which owns "create the stream and
+        read the first content delta". Once that returns we are COMMITTED:
+        deltas have flowed to the caller, so no mid-stream retry can ever
+        happen — a stream that breaks after 200 OK raises exactly one typed
+        :class:`LLMProviderError` (converted from whatever the SDK raised)
+        instead of silently truncating or replaying the request.
+
+        The openai package is imported lazily like every other path here, so
+        offline tests can exercise this code without the SDK installed.
+        """
+        base_url = self.base_url or os.getenv("LLM_BASE_URL")
+        api_key = self.api_key or os.getenv("LLM_API_KEY")
+        use_model = model or self.model or os.getenv("LLM_MODEL") or DEFAULT_LLM_MODEL
+
+        missing = [
+            name
+            for name, value in (("LLM_BASE_URL", base_url), ("LLM_API_KEY", api_key))
+            if not value
+        ]
+        if missing:
+            raise LLMConfigError(
+                "LLM provider not configured: missing required env var(s): "
+                + ", ".join(missing)
+            )
+
+        client = self._get_client(base_url, api_key)
+        stream, first_delta = self._open_stream_with_retry(
+            client,
+            model=use_model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=temperature,
+        )
+
+        # ---- Committed phase: deltas flowed, no retries past this point.
+        try:
+            if first_delta:
+                yield first_delta
+            for chunk in stream:
+                text = _delta_text(chunk)
+                if text:
+                    yield text
+        except Exception as exc:
+            raise _mid_stream_error(exc) from exc
+
+    def _open_stream_with_retry(
+        self,
+        client: Any,
+        *,
+        model: str,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+    ) -> tuple[Any, str]:
+        """Create ``stream=True`` request + read the FIRST content delta.
+
+        This is the ONLY retriable phase of :meth:`complete_stream`: the same
+        failure classes as ``complete`` retry here (timeout ≤ once, connection
+        /429/5xx within the 3-attempt budget, 4xx never). Returns
+        ``(stream, first_delta_text)`` — ``first_delta_text`` is ``""`` when
+        the stream ended without any content.
+        """
+        import openai  # Local: offline tests never import this at module level.
+
+        extra_kwargs: dict[str, Any] = {}
+        response_format = _response_format()
+        if response_format is not None:
+            extra_kwargs["response_format"] = response_format
+
+        kwargs: dict[str, Any] = dict(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=temperature,
+            stream=True,
+            **extra_kwargs,
+        )
+
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                stream = client.chat.completions.create(**kwargs)
+                first_delta = ""
+                for chunk in stream:
+                    text = _delta_text(chunk)
+                    if text:
+                        first_delta = text
+                        break
+                return stream, first_delta
+            except openai.APITimeoutError as exc:
+                # Timeouts retry at most once (TIMEOUT_MAX_ATTEMPTS): a 30s
+                # timeout must never cost 3 × 30s in one HTTP handler.
+                if attempt < TIMEOUT_MAX_ATTEMPTS:
+                    _sleep(_next_delay(attempt, None))
+                    continue
+                raise LLMTimeoutError(
+                    f"LLM provider did not answer within "
+                    f"{CLIENT_TIMEOUT_SECONDS:.0f}s (gave up after {attempt} "
+                    "attempt(s))"
+                ) from exc
+            except openai.APIConnectionError as exc:
+                if attempt < MAX_ATTEMPTS:
+                    _sleep(_next_delay(attempt, None))
+                    continue
+                raise LLMConnectionError(
+                    f"LLM provider unreachable after {attempt} attempt(s)"
+                ) from exc
+            except openai.RateLimitError as exc:
+                if attempt < MAX_ATTEMPTS:
+                    _sleep(_next_delay(attempt, exc))
+                    continue
+                raise LLMRateLimitError(
+                    f"LLM provider kept rate limiting after {attempt} attempt(s)"
+                ) from exc
+            except openai.APIStatusError as exc:
+                status = getattr(exc, "status_code", 0) or 0
+                if status >= 500:
+                    if attempt < MAX_ATTEMPTS:
+                        _sleep(_next_delay(attempt, None))
+                        continue
+                    raise LLMConnectionError(
+                        f"LLM provider kept failing (HTTP {status}) after "
+                        f"{attempt} attempt(s)"
+                    ) from exc
+                # Any 4xx is permanent: config/prompt/key problem. Fail fast,
+                # zero retries — and never include the key in the message.
+                raise LLMClientError(
+                    f"LLM provider rejected the request (HTTP {status}); "
+                    "check LLM_MODEL or key",
+                    status_code=status,
+                ) from exc
 
     def _get_client(self, base_url: str, api_key: str) -> Any:
         """Build the SDK client lazily (per instance) and reuse it."""

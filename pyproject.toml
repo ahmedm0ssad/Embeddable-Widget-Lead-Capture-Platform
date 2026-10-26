@@ -10,6 +10,9 @@ requires-python = ">=3.10"
 dependencies = []
 
 [tool.ruff.lint.per-file-ignores]
+# deliberate broad excepts: every failure must map to a clean event/error,
+# never a mid-SSE crash (same reasoning as provider.py / quarantine.py)
+"app/services/llm/streaming.py" = ["BLE001"]
 "app/routers/auth.py" = ["B008"]
 "app/dependencies/auth.py" = ["B008"]
 "app/routers/reports.py" = ["B008"]
