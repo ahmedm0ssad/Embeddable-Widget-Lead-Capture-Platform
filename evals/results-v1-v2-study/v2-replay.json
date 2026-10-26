@@ -56,5 +56,31 @@
     "body": {
       "detail": "The LLM provider kept rate limiting; try again later."
     }
+  },
+  {
+    "id": "case-020",
+    "tag": "stability",
+    "rep": 1,
+    "status": 200,
+    "body": {
+      "category": "fiction",
+      "summary": "A 17-year-old boy in Rotterdam learns to skate backwards and confront grief, first love, and broken promises during a quiet coming-of-age summer.",
+      "quality_flags": [],
+      "confidence": 0.9,
+      "reason": "The description depicts a coming-of-age story with grief and first love, fitting fiction."
+    }
+  },
+  {
+    "id": "case-020",
+    "tag": "stability",
+    "rep": 2,
+    "status": 200,
+    "body": {
+      "category": "fiction",
+      "summary": "A 17-year-old boy in Rotterdam learns to skate backwards and confront grief, first love, and broken promises during a quiet coming-of-age summer.",
+      "quality_flags": [],
+      "confidence": 0.9,
+      "reason": "The description depicts a coming-of-age story with grief and first love, fitting fiction."
+    }
   }
 ]
