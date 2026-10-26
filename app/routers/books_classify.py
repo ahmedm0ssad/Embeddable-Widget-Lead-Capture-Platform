@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import ValidationError
 
-from app.models.book_classify import ClassifyInput, ClassifyOutput
+from app.models.book_classify import ClassifyInput, ClassifyResponse
 from app.services.book_classify_service import classify_book
 
 router = APIRouter(tags=["books"])
@@ -11,11 +11,13 @@ router = APIRouter(tags=["books"])
 
 @router.post(
     "/books/classify",
-    response_model=ClassifyOutput,
+    # Stage 2: the real (non-stub) path returns the raw model text as
+    # {"raw": ...} until Stage 3 adds parsing, hence the union.
+    response_model=ClassifyResponse,
     status_code=200,
     summary="Classify a scraped book record",
 )
-async def classify(request: Request) -> ClassifyOutput:
+async def classify(request: Request) -> ClassifyResponse:
     """Validate the raw body manually (400, not 422) before any model/service call."""
     raw = await request.body()
     if not raw:

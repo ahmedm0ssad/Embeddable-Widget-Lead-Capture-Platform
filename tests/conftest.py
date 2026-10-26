@@ -4,6 +4,12 @@ os.environ["DATABASE_URL"] = ""
 os.environ["REDIS_URL"] = ""
 os.environ["SUPABASE_URL"] = "https://test.supabase.co"
 os.environ["SUPABASE_KEY"] = "test-anon-key"
+# A17 Stage 2: app/main.py load_dotenv() would otherwise import real LLM_* values
+# and the classify endpoint's non-stub path would hit the network. Force the
+# fully-offline mode (stub on, real model path disabled); individual tests may
+# still override — load_dotenv() does not touch variables set here.
+os.environ["LLM_STUB"] = "1"
+os.environ["LLM_ENABLED"] = ""
 
 
 import pytest

@@ -1,51 +1,28 @@
 """Book classification service (A17).
 
-STAGE 1: stub mode only — no model call is made yet. The real LLM pipeline
-will live under ``app/services/llm/`` and plug in below, replacing the stub
-branch while keeping this signature and the import surface stable:
+Thin entry point the router calls. All flow lives in
+``app/services/llm/pipeline.py``: the versioned prompt, the Stage 1 stub
+branch (``LLM_STUB=1`` — signature and classification behavior unchanged),
+the request cache, and the real provider path. Keeping the boundary here
+means the router surface and these tests stay stable across stages:
 
-    classify_book(title, description) -> ClassifyOutput
+    classify_book(title, description) -> ClassifyOutput | RawClassifyOutput
+
+At Stage 2 the real model path returns the raw model text wrapped as
+``RawClassifyOutput({"raw": ...})`` — parse/validate/repair is Stage 3.
 """
 
-import os
-
-from fastapi import HTTPException
-
-from app.models.book_classify import BookCategory, ClassifyOutput, QualityFlag
-
-_STUB_REASON = "Stub mode: deterministic answer (no model call)."
-_STUB_SUMMARY = (
-    "A fictional narrative whose protagonist is drawn into a journey that "
-    "reshapes how they understand their own life."
-)
+from app.models.book_classify import ClassifyOutput, RawClassifyOutput
+from app.services.llm.pipeline import run_book_classify
 
 
-def classify_book(title: str, description: str | None) -> ClassifyOutput:
+def classify_book(
+    title: str, description: str | None
+) -> ClassifyOutput | RawClassifyOutput:
     """Classify a scraped book record.
 
-    Returns a deterministic stub answer when ``LLM_STUB=1``; otherwise the
-    real LLM integration (next stage) — for now a 503 signals it is not
-    configured yet.
+    Returns the deterministic stub answer when ``LLM_STUB=1``; otherwise the
+    LLM pipeline (prompt → cache → provider) — at Stage 2 the raw model text
+    is returned unparsed as ``{"raw": ...}``.
     """
-    if os.getenv("LLM_STUB") == "1":
-        # missing_description is deterministic local validation, not model work.
-        quality_flags = (
-            []
-            if description and description.strip()
-            else [QualityFlag.MISSING_DESCRIPTION]
-        )
-        return ClassifyOutput(
-            category=BookCategory.FICTION,
-            summary=_STUB_SUMMARY,
-            quality_flags=quality_flags,
-            confidence=0.9,
-            reason=_STUB_REASON,
-        )
-
-    raise HTTPException(
-        status_code=503,
-        detail=(
-            "LLM integration not configured (stub mode off) — "
-            "this stage only implements the contract."
-        ),
-    )
+    return run_book_classify(title=title, description=description)
