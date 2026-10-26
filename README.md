@@ -468,6 +468,54 @@ Honest scoping, in the spirit of the capstone brief (§7):
   (`enrichment-jobs` queue), so a fresh submission may show as `pending`
   before enrichment completes.
 
+## POST /books/classify (LLM book classifier — A17)
+
+A synchronous classifier for scraped book records. **Stage 1 implements the contract only — stub mode**
+(`LLM_STUB=1`) returns a deterministic answer with no model call. The real LLM wiring (provider calls,
+prompt, eval harness) arrives in the next stages and will be documented here.
+
+### Works with `LLM_STUB=1` (no model call)
+
+```bash
+curl -X POST http://localhost:8000/books/classify \
+  -H "Content-Type: application/json" \
+  -d '{"title": "The Midnight Library", "description": "A novel about a woman who explores the infinite versions of her life between life and death."}'
+```
+
+Exact expected output (HTTP 200):
+
+```json
+{"category": "fiction", "summary": "A fictional narrative whose protagonist is drawn into a journey that reshapes how they understand their own life.", "quality_flags": [], "confidence": 0.9, "reason": "Stub mode: deterministic answer (no model call)."}
+```
+
+With no `description` at all, the deterministic `quality_flags` become `["missing_description"]`.
+
+### Broken request — validation is manual and returns **400** (never 422), naming the offending field
+
+```bash
+curl -i -X POST http://localhost:8000/books/classify \
+  -H "Content-Type: application/json" \
+  -d '{"title": ""}'
+```
+
+Exact expected output (HTTP 400):
+
+```json
+{"detail": {"error": "validation_failed", "fields": {"title": "String should have at least 1 character"}}}
+```
+
+The same applies when `title` is missing, longer than 500 chars, not a string, or `description`
+exceeds 2000 chars — the failing field and its problem are named in `detail.fields` before any
+model/service call runs.
+
+With `LLM_STUB` unset, the endpoint responds `503` until the real pipeline lands:
+
+```json
+{"detail": "LLM integration not configured (stub mode off) — this stage only implements the contract."}
+```
+
+Three environment variables (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`) swap the provider — laptop-local Ollama or hosted Groq — with zero code changes.
+
 ## License
 
 [MIT](LICENSE)
