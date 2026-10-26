@@ -1,6 +1,18 @@
 WIDGET_JS_TEMPLATE = """(function() {{
     var widgetId = "{widget_id}";
-    var configUrl = "/public/widget/" + widgetId + "/config";
+    var script = document.currentScript;
+    var apiBase = (script && script.getAttribute && script.getAttribute("data-api-base")) || "";
+    if (!apiBase && script && script.src) {{
+        var marker = "/public/widget/";
+        var idx = script.src.indexOf(marker);
+        if (idx !== -1) {{
+            apiBase = script.src.substring(0, idx);
+        }}
+    }}
+    if (!apiBase) {{
+        apiBase = window.location.origin;
+    }}
+    var configUrl = apiBase + "/public/widget/" + widgetId + "/config";
 
     var xhr = new XMLHttpRequest();
     xhr.open("GET", configUrl, true);
@@ -80,7 +92,7 @@ WIDGET_JS_TEMPLATE = """(function() {{
             submitBtn.disabled = true;
             submitBtn.textContent = "Sending...";
             var postXhr = new XMLHttpRequest();
-            postXhr.open("POST", "/public/widget/" + widgetId + "/submit", true);
+            postXhr.open("POST", apiBase + "/public/widget/" + widgetId + "/submit", true);
             postXhr.setRequestHeader("Content-Type", "application/json");
             postXhr.onload = function() {{
                 submitBtn.disabled = false;
@@ -120,10 +132,15 @@ WIDGET_JS_TEMPLATE = """(function() {{
 """
 
 
+DEFAULT_API_BASE_URL = "http://localhost:8000"
+
+
 def render_widget_js(widget_id: str, config: dict, js_version: int) -> str:
     return WIDGET_JS_TEMPLATE.format(widget_id=widget_id)
 
 
-def generate_script_tag(widget_id: str, js_version: int, base_url: str = "") -> str:
-    src = f"{base_url}/public/widget/{widget_id}/widget.js?v={js_version}"
+def generate_script_tag(
+    widget_id: str, js_version: int, base_url: str = DEFAULT_API_BASE_URL
+) -> str:
+    src = f"{base_url.rstrip('/')}/public/widget/{widget_id}/widget.js?v={js_version}"
     return f'<script src="{src}" data-widget-id="{widget_id}" defer></script>'

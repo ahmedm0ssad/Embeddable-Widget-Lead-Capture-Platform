@@ -10,6 +10,8 @@ beautifulsoup4>=4.12.0
 lxml>=5.1.0
 supabase>=2.0.0
 reportlab>=4.1.0
+openai>=1.30.0
+tiktoken>=0.14.0  # token estimation for the pre-send request guard (A17 stretch)
 
 # Testing
 pytest>=8.0.0

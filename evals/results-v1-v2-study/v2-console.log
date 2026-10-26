@@ -1,0 +1,168 @@
+﻿python : INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+At line:1 char:1
++ python -m evals.run_eval --mode in-process --model openai/gpt-oss-20b ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (INFO:httpx:HTTP...TTP/1.1 200 OK":String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1572 
+output_tokens=155 duration_ms=14782 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1559 
+output_tokens=179 duration_ms=2397 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1576 
+output_tokens=556 duration_ms=3513 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1560 
+output_tokens=436 duration_ms=2922 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1507 
+output_tokens=208 duration_ms=2505 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1505 
+output_tokens=134 duration_ms=2692 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1557 
+output_tokens=194 duration_ms=2188 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1570 
+output_tokens=355 duration_ms=3139 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1576 
+output_tokens=382 duration_ms=2151 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1505 
+output_tokens=211 duration_ms=2012 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1554 
+output_tokens=279 duration_ms=1746 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1564 
+output_tokens=206 duration_ms=2760 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1531 
+output_tokens=205 duration_ms=1831 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1550 
+output_tokens=240 duration_ms=2013 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1546 
+output_tokens=187 duration_ms=2553 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1547 
+output_tokens=278 duration_ms=1548 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1547 
+output_tokens=219 duration_ms=2083 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1553 
+output_tokens=239 duration_ms=1528 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1566 
+output_tokens=238 duration_ms=2444 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1564 
+output_tokens=338 duration_ms=1819 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1552 
+output_tokens=248 duration_ms=2034 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1591 
+output_tokens=199 duration_ms=1404 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1562 
+output_tokens=287 duration_ms=1652 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1571 
+output_tokens=759 duration_ms=5699 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=1569 
+output_tokens=521 duration_ms=2319 attempt=initial repaired=False cache=miss outcome=ok
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+INFO:app.services.llm.pipeline:llm_call prompt_version=book-classify-v2 model=openai/gpt-oss-20b input_tokens=0 
+output_tokens=0 duration_ms=32692 attempt=initial repaired=False cache=miss outcome=rate-limited
+INFO:httpx:HTTP Request: POST http://testserver/books/classify "HTTP/1.1 503 Service Unavailable"
+mode: in-process
+base_url: http://127.0.0.1:8000
+cases: 26
+prompt override: book-classify-v2.md
+model override: openai/gpt-oss-20b (in-process: effective)
+
+case-001   PASS mystery-thriller -> mystery-thriller   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[30752]
+case-002   PASS        self-help ->        self-help   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[2439]
+case-003   PASS        biography ->        biography   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[3532]
+case-004   PASS          romance ->          romance   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[2975]
+case-005   PASS        self-help ->        self-help   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[2518]
+case-006   PASS            other ->            other   flags[0 missing / 0 extra]  confidence[0.2 (in bounds)]  latency_ms[2704]
+-- batch pause: 12s (free-tier friendliness)
+case-007   PASS   sci-fi-fantasy ->   sci-fi-fantasy   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[2222]
+case-008   PASS           horror ->           horror   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[3148]
+case-009   PASS          romance ->          romance   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[2162]
+case-010   PASS        biography ->        biography   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[2027]
+case-011   PASS   sci-fi-fantasy ->   sci-fi-fantasy   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[1764]
+case-012   PASS      non-fiction ->      non-fiction   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[2784]
+-- batch pause: 12s (free-tier friendliness)
+case-013   FAIL      non-fiction ->      non-fiction   flags[1 missing / 0 extra]  confidence[n/a]  latency_ms[1841]
+           ^ missing expected flag(s): short_description
+case-014   PASS          fiction ->          fiction   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[2029]
+case-015   PASS           horror ->           horror   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[2571]
+case-016   PASS        self-help ->        self-help   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[1559]
+case-017   PASS      non-fiction ->      non-fiction   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[2101]
+case-018   PASS   sci-fi-fantasy ->   sci-fi-fantasy   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[1539]
+-- batch pause: 12s (free-tier friendliness)
+case-019   PASS mystery-thriller -> mystery-thriller   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[2469]
+case-020   FAIL          fiction ->          romance   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[1836]
+           ^ category 'romance' != expected 'fiction'
+case-021   FAIL            other ->          fiction   flags[0 missing / 0 extra]  confidence[0.9 (OUT of bounds)]  latency_ms[2046]
+           ^ category 'fiction' != expected 'other'; confidence 0.9 outside [None, 0.5]
+case-022   PASS mystery-thriller -> mystery-thriller   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[1414]
+case-023   PASS          romance ->          romance   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[1661]
+case-024   PASS           horror ->           horror   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[5707]
+-- batch pause: 12s (free-tier friendliness)
+case-025   PASS mystery-thriller -> mystery-thriller   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[2338]
+case-026   FAIL      non-fiction ->             None   flags[0 missing / 0 extra]  confidence[n/a]  latency_ms[32707]
+           ^ endpoint returned HTTP 503
+
+CATEGORY: 23/26
+CATEGORY easy: 15/15
+CATEGORY hard: 8/11
+FLAGS (expected present): 25/26
+WHEN-UNSURE (bounded cases): 1/2
+FAILED cases:
+  - case-013: missing expected flag(s): short_description
+  - case-020: category 'romance' != expected 'fiction'
+  - case-021: category 'fiction' != expected 'other'; confidence 0.9 outside [None, 0.5]
+  - case-026: endpoint returned HTTP 503
+wall-clock total: 168.9s
+avg latency per case: 4648ms
+saved: evals\results-v1-v2-study\v2.json

@@ -8,6 +8,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, Request, status
 
+from app.dependencies.client_ip import get_client_ip
 from app.dependencies.leads import check_origin, check_rate_limits
 from app.dependencies.services import get_lead_repo as _get_lead_repo
 from app.dependencies.services import get_redis as _get_redis_provider
@@ -101,7 +102,7 @@ async def submit_lead(
     repo: LeadRepository | None = None,
 ) -> tuple[LeadResponse, bool]:
     repo = _get_or_create_repo(repo)
-    ip = request.client.host if request.client else "unknown"
+    ip = get_client_ip(request)
 
     # Step 4: Widget exists & active check
     # Single lookup for both existence/active check and tenant_id extraction.

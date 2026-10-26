@@ -57,10 +57,6 @@ class TestGetWidgetConfig:
         assert isinstance(data["success_message"], str)
         assert isinstance(data["honeypot_field"], str)
 
-    @pytest.mark.xfail(
-        reason="Tier C: missing Cache-Control header on config endpoint, awaiting Ahmed's sign-off — see docs/reviews/m1-architecture.md",
-        strict=True,
-    )
     def test_config_cache_control_header(self, client, created_widget):
         widget_id = str(created_widget.id)
         resp = client.get(f"/public/widget/{widget_id}/config")

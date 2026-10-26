@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -13,6 +14,7 @@ from app.middleware.body_limit import BodyLimitMiddleware
 from app.routers import scrape, tasks
 from app.routers.ai import router as ai_router
 from app.routers.auth import auth_router, protected_router
+from app.routers.books_classify import router as books_classify_router
 from app.routers.embed import router as embed_router
 from app.routers.leads import cross_router as leads_cross_router
 from app.routers.leads import dashboard_router as leads_dashboard_router
@@ -21,6 +23,11 @@ from app.routers.reports import router as reports_router
 from app.routers.widgets import router as widgets_router
 
 load_dotenv()
+
+# One-line production logging wiring (README-noted gap): without it, app-level
+# INFO lines — including the structured ``llm_call`` cost lines — never reach
+# stderr/container logs because the root logger has no handler.
+logging.basicConfig(level=logging.INFO)
 
 _redis_client: redis_ai.Redis | None = None
 
@@ -97,6 +104,7 @@ app.include_router(embed_router)
 app.include_router(leads_router)
 app.include_router(leads_dashboard_router)
 app.include_router(leads_cross_router)
+app.include_router(books_classify_router)
 
 
 @app.get("/")
@@ -104,7 +112,14 @@ async def home():
     info = {
         "name": "FlyRank API",
         "version": "0.3.0",
-        "endpoints": ["/tasks", "/scrape", "/ai", "/widgets", "/leads"],
+        "endpoints": [
+            "/tasks",
+            "/scrape",
+            "/ai",
+            "/widgets",
+            "/leads",
+            "/books/classify",
+        ],
     }
     if get_redis():
         info["redis"] = "connected"

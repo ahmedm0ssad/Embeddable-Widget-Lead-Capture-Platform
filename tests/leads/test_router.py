@@ -43,6 +43,26 @@ class TestSubmitLead:
         assert data["success"] is True
         assert "lead_id" in data
 
+    def test_trusted_proxy_xff_stores_forwarded_ip(
+        self, client, created_widget, monkeypatch
+    ):
+        from app.services import lead_service
+
+        monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "172.18.0.0/16")
+        widget_id = str(created_widget.id)
+        resp = client.post(
+            f"/public/widget/{widget_id}/submit",
+            json={"form_data": {"name": "John", "email": "john@test.com"}},
+            headers={
+                "Origin": "https://myshop.com",
+                "X-Forwarded-For": "8.8.8.8",
+            },
+        )
+        assert resp.status_code == 201
+        lead_id = resp.json()["lead_id"]
+        repo = lead_service._get_or_create_repo()
+        assert repo._leads[lead_id]["ip_address"] == "8.8.8.8"
+
     def test_422_validation_error(self, client, created_widget):
         widget_id = str(created_widget.id)
         resp = client.post(

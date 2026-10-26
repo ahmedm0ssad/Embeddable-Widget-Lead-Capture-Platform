@@ -38,12 +38,35 @@ class TestGetPool:
 
     @pytest.mark.asyncio
     async def test_returns_existing_pool(self, monkeypatch):
+        import asyncio
+
         fake_pool = AsyncMock()
         monkeypatch.setattr("app.core.database._pool", fake_pool)
+        monkeypatch.setattr("app.core.database._pool_loop", asyncio.get_running_loop())
         with patch("asyncpg.create_pool") as mock_create:
             pool = await get_pool()
             assert pool is fake_pool
             mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recreates_pool_when_bound_loop_changed(self, monkeypatch):
+        """F9 regression: a pool created on a different (closed) loop must not be
+        reused; get_pool() drops it and creates a fresh pool for the new loop."""
+        import asyncio
+
+        old_pool = AsyncMock()
+        old_pool.close.side_effect = Exception("bound to a closed loop")
+        new_pool = AsyncMock()
+        monkeypatch.setattr("app.core.database._pool", old_pool)
+        monkeypatch.setattr("app.core.database._pool_loop", asyncio.new_event_loop())
+        monkeypatch.setattr(
+            "app.core.database.DATABASE_URL", "postgresql://localhost/db"
+        )
+        with patch("asyncpg.create_pool", AsyncMock(return_value=new_pool)) as mock:
+            pool = await get_pool()
+            assert pool is new_pool
+            old_pool.close.assert_awaited_once()
+            mock.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_retries_on_failure(self, monkeypatch):

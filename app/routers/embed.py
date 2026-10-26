@@ -12,7 +12,7 @@ router = APIRouter(prefix="/public/widget", tags=["public-widget"])
 @router.get(
     "/{widget_id}/config",
     summary="Get public widget config",
-    description="Returns the public configuration JSON for an active widget, used by the embed script to render its form. Returns 404 if the widget does not exist.",
+    description="Returns the public configuration JSON for an active widget, used by the embed script to render its form. Served with a short-lived cache header so the browser can reuse it without re-fetching on every page load. Returns 404 if the widget does not exist.",
 )
 async def get_widget_config(widget_id: UUID):
     config = await embed_service.get_widget_config(str(widget_id))
@@ -21,7 +21,12 @@ async def get_widget_config(widget_id: UUID):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Widget not found",
         )
-    return JSONResponse(content=config)
+    return JSONResponse(
+        content=config,
+        headers={
+            "Cache-Control": "public, max-age=300",
+        },
+    )
 
 
 @router.get(

@@ -60,7 +60,7 @@ class PostgresLeadRepository(LeadRepositoryProtocol):
             widget_id=row["widget_id"],
             tenant_id=row["tenant_id"],
             form_data=_parse_json(row["form_data"]),
-            ip_address=row["ip_address"],
+            ip_address=str(row["ip_address"]),
             user_agent=row.get("user_agent"),
             referer=row.get("referer"),
             fingerprint=row["fingerprint"],
@@ -386,7 +386,7 @@ class PostgresLeadRepository(LeadRepositoryProtocol):
         for key, column in geo_columns.items():
             if key in extra:
                 assignments.append(
-                    f"{column} = COALESCE(${len(geo_params) + 3}, {column})"
+                    f"{column} = COALESCE(${len(geo_params) + 4}, {column})"
                 )
                 geo_params.append(extra[key])
 

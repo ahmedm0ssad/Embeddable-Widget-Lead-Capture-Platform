@@ -10,6 +10,8 @@
 
 A production-ready FastAPI backend that combines task management, web scraping, Supabase authentication, asynchronous AI inference (RQ + Groq), automated PDF report generation, and an embeddable widget platform with spam-protected lead capture.
 
+> **Capstone track?** See [`docs/capstone-submission.md`](docs/capstone-submission.md) for the widget & lead-capture mission deep-dive with runnable examples and eval results.
+
 ## Features
 
 ✅ FastAPI async REST API

@@ -1,0 +1,67 @@
+name: flyrank-capstone-widgetplatform
+version: 1.0.0
+description: >-
+  Embeddable Widget & Lead-Capture Platform. A customer defines a widget, gets a
+  one-line <script> tag, and every submission from the open internet is
+  validated, spam-filtered, rate-limited, geo-enriched, stored, and shown in a
+  dashboard.
+
+run: docker compose up --build
+seed: python -m scripts.seed_demo
+test: >-
+  python -m pytest tests/embed/ tests/leads/ tests/widgets/ tests/middleware/
+  tests/models/ tests/repositories/ tests/routers/ tests/scrapers/
+  tests/services/ tests/test_main.py tests/test_background_jobs.py
+  tests/test_e2e_widget.py tests/test_lead_worker.py tests/test_report_worker.py
+  tests/test_worker.py --ignore=tests/test_e2e.py --ignore=tests/test_ai_e2e.py
+  --cov=app --cov-report=term-missing --tb=short -v
+base_url: http://localhost:8000
+
+endpoints:
+  # Public embed — served to any website via <script> tag
+  - path: GET /public/widget/{id}/config
+    description: Public widget config JSON (short-lived cache, CORS enabled)
+  - path: GET /public/widget/{id}/widget.js
+    description: Versioned embeddable JS bundle (1-year immutable cache)
+  - path: POST /public/widget/{id}/submit
+    description: Public lead submission — validation, rate limits, spam filter, geo enrichment, webhook
+  # Owner management — Bearer auth (Supabase JWT)
+  - path: GET|POST /widgets
+    description: List / create widgets (tenant-isolated)
+  - path: GET|PUT|DELETE /widgets/{id}
+    description: Get / update (bumps js_version) / soft-delete a widget
+  - path: GET /widgets/{id}/embed
+    description: Embed snippet HTML for a widget (auth, tenant-scoped)
+  # Owner dashboard — Bearer auth
+  - path: GET /widgets/{id}/leads
+    description: Paginated lead list with filters and sorting
+  - path: GET /widgets/{id}/stats
+    description: Lead statistics (counts over time, geo breakdown)
+  - path: GET /widgets/{id}/export
+    description: CSV export of leads
+  - path: GET /leads
+    description: Cross-widget lead list
+  - path: GET /leads/stats
+    description: Global lead statistics
+  # System
+  - path: GET /health
+    description: Liveness / readiness with Redis and Postgres status
+
+stack:
+  language: Python 3.13
+  framework: FastAPI + Uvicorn
+  database: PostgreSQL 16 (asyncpg) via docker compose; SQLite dev fallback
+  cache_queue: Redis 7 + RQ
+  auth: Supabase JWT
+  validation: Pydantic v2
+
+geo_providers:
+  - ipapi.co (free, no key)
+  - ipinfo.io (free token via IPINFO_TOKEN)
+  - ip-api.com (free, no key)
+
+notes: >-
+  The "customer site" is a plain HTML page (customer-site/index.html) opened
+  from a second local origin (python -m http.server 5500). Geo providers are
+  mocked in tests for deterministic fallback. Secrets live in .env
+  (git-ignored); .env.example has placeholders.

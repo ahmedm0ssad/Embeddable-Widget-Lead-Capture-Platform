@@ -1,6 +1,7 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import PlainTextResponse
 
 from app.dependencies.auth import get_current_user
 from app.dependencies.services import get_widget_repo
@@ -12,6 +13,7 @@ from app.models.widget import (
 )
 from app.repositories.protocol import WidgetRepositoryProtocol
 from app.services import widget_service
+from app.services.widget_js import generate_script_tag
 
 router = APIRouter(prefix="/widgets", tags=["widgets"])
 
@@ -84,6 +86,30 @@ async def get_widget(
             detail="Widget not found",
         )
     return widget
+
+
+@router.get(
+    "/{widget_id}/embed",
+    response_class=PlainTextResponse,
+    summary="Get embed snippet HTML",
+    description="Returns the one-line <script> tag that embeds a widget on a customer site. Uses the request host as the API base so the snippet always points at the API origin the owner reached. Returns 404 if the widget does not exist.",
+)
+async def get_widget_embed(
+    widget_id: UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    repo: WidgetRepositoryProtocol = Depends(get_widget_repo),
+):
+    tenant_id = str(user["id"])
+    widget = await widget_service.get_widget(str(widget_id), tenant_id, repo=repo)
+    if widget is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Widget not found",
+        )
+    base_url = str(request.base_url).rstrip("/")
+    snippet = generate_script_tag(str(widget_id), widget.js_version, base_url=base_url)
+    return PlainTextResponse(snippet, media_type="text/html")
 
 
 @router.put(

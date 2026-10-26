@@ -10,17 +10,23 @@ requires-python = ">=3.10"
 dependencies = []
 
 [tool.ruff.lint.per-file-ignores]
+# deliberate broad excepts: every failure must map to a clean event/error,
+# never a mid-SSE crash (same reasoning as provider.py / quarantine.py)
+"app/services/llm/streaming.py" = ["BLE001"]
 "app/routers/auth.py" = ["B008"]
 "app/dependencies/auth.py" = ["B008"]
 "app/routers/reports.py" = ["B008"]
 "app/routers/leads.py" = ["B008"]
 "app/routers/widgets.py" = ["B008"]
+"app/core/database.py" = ["BLE001", "S110"]
 "app/services/embed_service.py" = ["BLE001", "S110"]
 "app/services/fingerprint_service.py" = ["BLE001", "S110"]
 "app/services/lead_service.py" = ["BLE001", "S110"]
 "app/services/lead_worker.py" = ["BLE001", "S110"]
 "app/services/widget_service.py" = ["BLE001", "S110"]
 "app/services/webhook_service.py" = ["BLE001"]
+"app/services/llm/quarantine.py" = ["BLE001", "S110"]
+"app/services/llm/provider.py" = ["BLE001"]
 "app/dependencies/leads.py" = ["BLE001"]
 "app/main.py" = ["BLE001"]
 "app/models/lead.py" = ["TRY004"]
@@ -36,4 +42,4 @@ profile = "black"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "--ignore=tests/test_db_schema.py"
+addopts = "--ignore=tests/test_db_schema.py --ignore=tests/repositories/test_postgres_lead_repo_live.py"

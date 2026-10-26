@@ -12,3 +12,11 @@ __pycache__/
 README_assets/
 docs/
 *.pdf
+*.log
+*.db
+.coverage
+.ruff_cache/
+htmlcov/
+customer-site/
+BUILDLOG.md
+EVIDENCE.md
